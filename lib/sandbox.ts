@@ -24,7 +24,7 @@ import * as extensions from "./extensions";
 import * as logger from "./logger";
 import * as scheduling from "./scheduling";
 import Path from "./common/path";
-import { Fault, SessionContext, ScriptResult } from "./types";
+import { Fault, SessionContext, ScriptResult, SyncState } from "./types";
 
 // Used for throwing to exit user script and commit
 const COMMIT = Symbol();
@@ -350,6 +350,28 @@ function log(msg: string, meta: Record<string, unknown>): void {
   }
 }
 
+function fastRead(paths: string[], timestamp: { [attr: string]: number }, name: string): ParameterWrapper[]{
+  const sessionContext = state.sessionContext as SessionContext
+  if(sessionContext.fastReads === undefined)
+    sessionContext.fastReads = {}
+
+  if(sessionContext.fastReads[name] !== undefined){
+    const warprers: ParameterWrapper[] = []
+    for (let i = 0; i < paths.length; i++){
+      if(name !== "last")
+        warprers.push(readDevice(paths[i], timestamp))
+    }
+    
+    return warprers
+  }else{
+    sessionContext.fastReads[name] = {
+      paths: paths,
+      fuffilled: false,
+    }
+    throw COMMIT;
+  }
+}
+
 Object.defineProperty(context, "Date", { value: SandboxDate });
 Object.defineProperty(context, "clear", { value: clear });
 Object.defineProperty(context, "commit", { value: commit });
@@ -358,6 +380,7 @@ Object.defineProperty(context, "log", { value: log });
 Object.defineProperty(context, "writeDevice", { value: writeDevice });
 Object.defineProperty(context, "readDevice", { value: readDevice });
 Object.defineProperty(context, "_X_WIS7_X_", { value: _X_WIS7_X_ });
+Object.defineProperty(context, "fastRead", { value: fastRead });
 
 // Monkey-patch Math.random() to make it deterministic
 context.random = random;

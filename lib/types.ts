@@ -168,6 +168,10 @@ export interface SessionContext {
   operationsTouched?: { [commandKey: string]: 1 | 0 };
   provisionsRet?: any[];
   doneTasks?: string[];
+  fastReads?: {[key: string]: {
+    paths: string[];
+    fuffilled: boolean;
+  }}
 }
 
 export interface Task {

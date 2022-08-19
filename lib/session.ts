@@ -1543,6 +1543,24 @@ function generateGetRpcRequest(
   const syncState = sessionContext.syncState;
   if (!syncState) return null;
 
+
+  /*
+    Speeding rpcRequest processing by trying 
+  */
+  if(sessionContext.fastReads !== undefined){
+    for (const key in sessionContext.fastReads) {
+      const fastRead = sessionContext.fastReads[key]
+      if(fastRead.fuffilled)
+        continue
+
+      fastRead.fuffilled = true
+      return {
+        name: "GetParameterValues",
+        parameterNames: fastRead.paths,
+      }
+    }
+  }  
+
   for (const path of syncState.refreshAttributes.exist) {
     let found = false;
     for (const p of sessionContext.deviceData.paths.find(
@@ -1671,6 +1689,9 @@ function generateGetRpcRequest(
       };
     }
   }
+
+
+
 
   if (syncState.refreshAttributes.value.size) {
     const GPV_BATCH_SIZE = localCache.getConfig(
