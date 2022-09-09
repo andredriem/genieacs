@@ -126,6 +126,8 @@ export interface SyncState {
 }
 
 export interface SessionContext {
+  analyTicsIteation?: number,
+  startAnalytics?: boolean,
   sessionId?: string;
   timestamp: number;
   deviceId: string;

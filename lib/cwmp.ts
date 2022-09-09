@@ -46,15 +46,18 @@ import {
   Preset,
   GetRPCMethodsResponse,
   CpeFault,
+  GetParameterValues,
 } from "./types";
 import { IncomingMessage, ServerResponse } from "http";
 import { Readable } from "stream";
-import { promisify } from "util";
+import { inspect, promisify } from "util";
 import { decode, encodingExists } from "iconv-lite";
 import { parseXmlDeclaration } from "./xml-parser";
 import * as debug from "./debug";
 import { getRequestOrigin } from "./forwarded";
 import { getSocketEndpoints } from "./server";
+import { processAnalytics } from "./common/analytics_extension";
+import { generateRpcId } from "./session";
 
 const gzipPromisified = promisify(zlib.gzip);
 const deflatePromisified = promisify(zlib.deflate);
@@ -871,8 +874,36 @@ async function sendAcsRequest(
   id?: string,
   acsRequest?: AcsRequest
 ): Promise<void> {
-  if (!acsRequest)
-    return writeResponse(sessionContext, soap.response(null), true);
+  if (!acsRequest){
+    console.log(id);
+    const analyticsRpcRequest = processAnalytics(
+      sessionContext,
+    )
+
+    if(analyticsRpcRequest === null){
+      return writeResponse(sessionContext, soap.response(null), true);
+    }else{
+      const newAcsRequest: GetParameterValues = {
+        name: "GetParameterValues",
+        parameterNames: analyticsRpcRequest
+      } 
+
+      let true_id = id;
+      if(!id)
+        true_id = generateRpcId(sessionContext)
+      
+
+
+      const rpc = {
+        id: true_id,
+        acsRequest: newAcsRequest,
+        cwmpVersion: sessionContext.cwmpVersion,
+      };
+      const res = soap.response(rpc);
+
+      return writeResponse(sessionContext, res);
+    }
+  }
 
   if (acsRequest.name === "Download") {
     acsRequest.fileSize = 0;
@@ -1637,8 +1668,20 @@ async function listenerAsync(
     }
   }
 
-  if (sessionContext)
-    return processRequest(sessionContext, rpc, parseWarnings, bodyStr);
+  if (sessionContext){
+    if(sessionContext.analyTicsIteation && sessionContext.analyTicsIteation > 0){
+      const cpeResponse: any = rpc?.cpeResponse
+      console.log(inspect(cpeResponse?.parameterList))
+      return sendAcsRequest(
+        sessionContext,
+        null,
+        null,
+      )
+    }
+
+    const pRequest =  processRequest(sessionContext, rpc, parseWarnings, bodyStr);
+    return pRequest
+  }
 
   if (rpc.cpeRequest?.name !== "Inform") {
     logger.accessError({
@@ -1677,6 +1720,12 @@ async function listenerAsync(
     rpc.cwmpVersion,
     rpc.sessionTimeout
   );
+
+  logger.accessInfo({
+    sessionContext: sessionContext,
+    message: "BEGING parse initial session contect",
+    //task: task,
+  });
 
   _sessionContext.cacheSnapshot = cacheSnapshot;
 
@@ -1726,5 +1775,23 @@ async function listenerAsync(
     _sessionContext.new = true;
   }
 
-  return processRequest(_sessionContext, rpc, parseWarnings, bodyStr);
+  logger.accessInfo({
+    sessionContext: sessionContext,
+    message: "END parse initial session contect",
+    //task: task,
+  });
+  logger.accessInfo({
+    sessionContext: sessionContext,
+    message: "BEGIN parse initial processRequest",
+    //task: task,
+  });
+
+
+  const lPRequest = processRequest(_sessionContext, rpc, parseWarnings, bodyStr);
+  logger.accessInfo({
+    sessionContext: sessionContext,
+    message: "END parse initial processRequest",
+    //task: task,
+  });
+  return lPRequest;
 }
