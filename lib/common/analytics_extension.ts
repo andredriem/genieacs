@@ -7,7 +7,8 @@ export function processAnalytics(
   requestBody?: string,
 ): string[] {
 
-
+  if(sessionContext.analyticsStorage === undefined)
+    sessionContext.analyticsStorage = {};
 
   if(sessionContext.analyTicsIteation === undefined)
     sessionContext.analyTicsIteation = 0;

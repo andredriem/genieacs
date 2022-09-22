@@ -875,7 +875,6 @@ async function sendAcsRequest(
   acsRequest?: AcsRequest
 ): Promise<void> {
   if (!acsRequest){
-    console.log(id);
     const analyticsRpcRequest = processAnalytics(
       sessionContext,
     )
@@ -1670,8 +1669,7 @@ async function listenerAsync(
 
   if (sessionContext){
     if(sessionContext.analyTicsIteation && sessionContext.analyTicsIteation > 0){
-      const cpeResponse: any = rpc?.cpeResponse
-      console.log(inspect(cpeResponse?.parameterList))
+      sessionContext.cpeResponse = rpc?.cpeResponse
       return sendAcsRequest(
         sessionContext,
         null,

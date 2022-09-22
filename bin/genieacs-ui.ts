@@ -46,7 +46,7 @@ function exitWorkerUngracefully(): void {
   });
 }
 
-if (false) {
+if (!cluster.worker) {
   const WORKER_COUNT = config.get("UI_WORKER_PROCESSES") as number;
 
   logger.info({

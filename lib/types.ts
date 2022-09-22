@@ -128,6 +128,8 @@ export interface SyncState {
 export interface SessionContext {
   analyTicsIteation?: number,
   startAnalytics?: boolean,
+  analyticsStorage?: object,
+  cpeResponse?: CpeResponse,
   sessionId?: string;
   timestamp: number;
   deviceId: string;

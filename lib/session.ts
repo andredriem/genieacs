@@ -1026,27 +1026,6 @@ export async function rpcRequest(
   _declarations: Declaration[]
 ): Promise<{ fault: Fault; rpcId: string; rpc: AcsRequest }> {
 
-  
-  /*// Check if sessionContext is null to enable run of analytics extension
-  console.log("ZZZZZZZZZZZ")
-
-  if(sessionContext.startAnalytics === true || true){
-    console.log("AAAAAAAAAAA")
-
-    const analyticsRpcRequest = processAnalytics(
-      sessionContext,
-    )
-
-    return {
-      fault: null,
-      rpcId: generateRpcId(sessionContext),
-      rpc: {
-        name: "GetParameterValues",
-        parameterNames: analyticsRpcRequest,
-      }
-    }
-  }*/
-
   if (sessionContext.rpcRequest != null) {
     return {
       fault: null,
