@@ -1,5 +1,7 @@
 import { GetParameterValues } from "../soap";
 import { DeviceData, SessionContext } from "../types";
+import * as logger from "../logger"
+
 
 
 export function processAnalytics(
@@ -25,6 +27,12 @@ export function processAnalytics(
     void exportCurrentDeviceData(sessionContext.deviceData)
     return null;
   }
+
+    logger.accessInfo({
+      sessionContext: sessionContext,
+      message: "The following request are 100% made by analytic extension",
+      //task: task,
+    });
 
 
   sessionContext.analyTicsIteation += 1;
