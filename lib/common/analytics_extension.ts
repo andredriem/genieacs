@@ -7,6 +7,7 @@ export function processAnalytics(
   requestBody?: string,
 ): string[] {
 
+
   if(sessionContext.analyticsStorage === undefined)
     sessionContext.analyticsStorage = {};
 
@@ -40,11 +41,16 @@ function generateArguments(analyTicsIteation, deviceData): string[] | null{
   switch (analyTicsIteation) {
     case 0:
       return [
+        "InternetGatewayDevice.DeviceInfo.ModelName"
+      ]
+      break;
+      return [
         "InternetGatewayDevice.LANDevice.1.Hosts.Host.3.AddressSource",
         "InternetGatewayDevice.LANDevice.1.Hosts.Host.3.MACAddress",
       ]
       break;
     case 1:
+      return null;
       return [
         "InternetGatewayDevice.DeviceInfo.ModelName"
       ]

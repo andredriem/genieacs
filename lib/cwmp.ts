@@ -1719,12 +1719,6 @@ async function listenerAsync(
     rpc.sessionTimeout
   );
 
-  logger.accessInfo({
-    sessionContext: sessionContext,
-    message: "BEGING parse initial session contect",
-    //task: task,
-  });
-
   _sessionContext.cacheSnapshot = cacheSnapshot;
 
   _sessionContext.httpRequest = httpRequest;
@@ -1773,23 +1767,6 @@ async function listenerAsync(
     _sessionContext.new = true;
   }
 
-  logger.accessInfo({
-    sessionContext: sessionContext,
-    message: "END parse initial session contect",
-    //task: task,
-  });
-  logger.accessInfo({
-    sessionContext: sessionContext,
-    message: "BEGIN parse initial processRequest",
-    //task: task,
-  });
-
-
   const lPRequest = processRequest(_sessionContext, rpc, parseWarnings, bodyStr);
-  logger.accessInfo({
-    sessionContext: sessionContext,
-    message: "END parse initial processRequest",
-    //task: task,
-  });
   return lPRequest;
 }
