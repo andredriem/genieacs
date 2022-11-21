@@ -19,6 +19,24 @@ services:
       - "7547:7547"
       - '4000:4000'
     command: npm run cwmp-dev
+  genieacs-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: base
+    environment:
+      - CWMP_WORKER_PROCESSES=1
+      - GENIEACS_MONGODB_CONNECTION_URL=mongodb://mongo/genieacs
+    volumes:
+      - .:/home/node/app/
+    container_name: genieacs
+    expose:
+      - '4000'
+      - '7547'
+    ports:
+      - "3000:3000"
+    command: npm run ui-dev
+
   mongo:
       image: mongo:4.0 
       restart: always

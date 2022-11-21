@@ -1,17 +1,39 @@
-import { GetParameterValues } from "../soap";
-import { DeviceData, SessionContext } from "../types";
+import { AcsRequest, DeviceData, GetParameterNames, GetParameterValues, SessionContext } from "../types";
+import * as logger from "../logger";
 
 
 export function processAnalytics(
   sessionContext: SessionContext,
   requestBody?: string,
-): string[] {
+): AcsRequest | null{
+
+  return null;
+  sessionContext.debug = true
 
   if(sessionContext.analyticsStorage === undefined)
     sessionContext.analyticsStorage = {};
 
   if(sessionContext.analyTicsIteation === undefined)
     sessionContext.analyTicsIteation = 0;
+
+
+
+    logger.accessWarn({
+      sessionContext: sessionContext,
+      message: `AuthState: ${sessionContext.authState}`,
+    });
+
+    logger.accessWarn({
+      sessionContext: sessionContext,
+      message: `Iteration: ${sessionContext.analyTicsIteation}`,
+    });
+
+    logger.accessWarn({
+      sessionContext: sessionContext,
+      message: `Analytics Storage: ${JSON.stringify(sessionContext.analyticsStorage)}`,
+    });
+  
+  
 
   const nextIterationOfGetValues = generateArguments(sessionContext.analyTicsIteation, sessionContext.deviceData)
   
@@ -36,19 +58,29 @@ async function exportCurrentDeviceData(deviceData: DeviceData): Promise<void> {
 }
 
 
-function generateArguments(analyTicsIteation, deviceData): string[] | null{
+function generateGetParameterNames(parameterPath: string, nextLevel: boolean): GetParameterNames{
+  return {
+    name: "GetParameterNames",
+    parameterPath: parameterPath,
+    nextLevel: nextLevel,
+  }
+}
+
+function genetrateGetParameterValues(paths: string[]): GetParameterValues{
+  return {
+    name: "GetParameterValues",
+    parameterNames: paths,
+  }
+}
+
+function generateArguments(analyTicsIteation, deviceData): AcsRequest | null{
   switch (analyTicsIteation) {
     case 0:
-      return [
-        "InternetGatewayDevice.LANDevice.1.Hosts.Host.3.AddressSource",
-        "InternetGatewayDevice.LANDevice.1.Hosts.Host.3.MACAddress",
-      ]
+      return generateGetParameterNames("InternetGatewayDevice.LANDevice.", false)
       break;
     case 1:
-      return [
-        "InternetGatewayDevice.DeviceInfo.ModelName"
-      ]
-      break;
+      return genetrateGetParameterValues(["InternetGatewayDevice.DeviceInfo.Manufacturer"])
+      break;      
     default:
       return null;
       break;

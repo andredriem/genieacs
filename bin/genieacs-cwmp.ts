@@ -46,7 +46,7 @@ function exitWorkerUngracefully(): void {
   });
 }
 
-if (!cluster.worker) {
+if (false) {
   const WORKER_COUNT = config.get("CWMP_WORKER_PROCESSES") as number;
 
   logger.info({

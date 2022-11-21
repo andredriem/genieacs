@@ -129,6 +129,7 @@ export interface SessionContext {
   analyTicsIteation?: number,
   startAnalytics?: boolean,
   analyticsStorage?: object,
+  analyTicsIteationFinished?: boolean,
   cpeResponse?: CpeResponse,
   sessionId?: string;
   timestamp: number;

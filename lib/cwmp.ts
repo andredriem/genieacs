@@ -434,6 +434,8 @@ async function applyPresets(sessionContext: SessionContext): Promise<void> {
     }
   }
 
+  // END Filter presets  
+
   deviceData.timestamps.revision = 1;
   deviceData.attributes.revision = 1;
 
@@ -584,6 +586,12 @@ async function applyPresets(sessionContext: SessionContext): Promise<void> {
     rpcId: id,
     rpc: acsRequest,
   } = await session.rpcRequest(sessionContext, null);
+
+  // Post process delcaration timestamp
+  logger.accessWarn({
+    sessionContext: sessionContext,
+    message: `TIME ${Date.now()}  POST-DECLARTIONS ${JSON.stringify(acsReq)}`,
+  });
 
   if (fault) {
     recordFault(sessionContext, fault);
@@ -875,17 +883,18 @@ async function sendAcsRequest(
   acsRequest?: AcsRequest
 ): Promise<void> {
   if (!acsRequest){
-    const analyticsRpcRequest = processAnalytics(
-      sessionContext,
-    )
+
+    let analyticsRpcRequest = null
+    if(!sessionContext.analyTicsIteationFinished){
+      analyticsRpcRequest = processAnalytics(
+        sessionContext,
+      )
+    }
 
     if(analyticsRpcRequest === null){
+      sessionContext.analyTicsIteationFinished = true
       return writeResponse(sessionContext, soap.response(null), true);
     }else{
-      const newAcsRequest: GetParameterValues = {
-        name: "GetParameterValues",
-        parameterNames: analyticsRpcRequest
-      } 
 
       let true_id = id;
       if(!id)
@@ -895,10 +904,21 @@ async function sendAcsRequest(
 
       const rpc = {
         id: true_id,
-        acsRequest: newAcsRequest,
+        acsRequest: analyticsRpcRequest,
         cwmpVersion: sessionContext.cwmpVersion,
       };
       const res = soap.response(rpc);
+
+      logger.accessInfo({
+        sessionContext: sessionContext,
+        message: `Analytics response ${JSON.stringify(res)}`,
+      });
+      logger.accessInfo({
+        sessionContext: sessionContext,
+        message: "ACS request",
+        rpc: rpc,
+      });
+    
 
       return writeResponse(sessionContext, res);
     }
@@ -1667,8 +1687,25 @@ async function listenerAsync(
     }
   }
 
+  // Hijacks GenieACS and force analytics pipelne
   if (sessionContext){
-    if(sessionContext.analyTicsIteation && sessionContext.analyTicsIteation > 0){
+    if(!sessionContext.analyTicsIteationFinished && sessionContext.analyTicsIteation && sessionContext.analyTicsIteation > 0){
+    // Reauthenticate in case of new connection
+    if (sessionContext.authState !== 2) {
+      const authenticated = await authenticate(sessionContext, bodyStr);
+      if (!authenticated) {
+        if (!sessionContext.authState) {
+          sessionContext.authState = 1;
+          return responseUnauthorized(sessionContext, false);
+        } else {
+          await endSession(sessionContext);
+          return responseUnauthorized(sessionContext, true);
+        }
+      }
+      sessionContext.authState = 2;
+    }
+
+
       sessionContext.cpeResponse = rpc?.cpeResponse
       return sendAcsRequest(
         sessionContext,
