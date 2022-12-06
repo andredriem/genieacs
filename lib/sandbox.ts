@@ -156,7 +156,9 @@ class ParameterWrapper {
 
           if (!attr) return UNDEFINED;
 
-          return attr[1];
+          const final_array = [...attr[1]];
+          final_array.push(attr[0]);
+          return final_array
         },
       });
     }
@@ -215,6 +217,34 @@ class ParameterWrapper {
         yield new ParameterWrapper(p, attributes, [p], state.revision);
     };
   }
+}
+
+function readDevice(path: string, timestamps: { [attr: string]: number }): ParameterWrapper{
+  return declare(path, timestamps, null);
+}
+
+
+function isWithelistedPath(path: string): boolean{
+ return path.includes("InternetGatewayDevice.ManagementServer") || path.includes("Tags"); 
+}
+
+
+function writeDevice(
+  path: string,
+  timestamps: { [attr: string]: number },
+  values: { [attr: string]: any }
+): ParameterWrapper {
+  if(!isWithelistedPath(path))
+    return null;
+  return declare(path, timestamps, values)
+}
+
+function _X_WIS7_X_(
+  path: string,
+  timestamps: { [attr: string]: number },
+  values: { [attr: string]: any }
+): ParameterWrapper {
+  return declare(path, timestamps, values);
 }
 
 function declare(
@@ -322,11 +352,13 @@ function log(msg: string, meta: Record<string, unknown>): void {
 }
 
 Object.defineProperty(context, "Date", { value: SandboxDate });
-Object.defineProperty(context, "declare", { value: declare });
 Object.defineProperty(context, "clear", { value: clear });
 Object.defineProperty(context, "commit", { value: commit });
 Object.defineProperty(context, "ext", { value: ext });
 Object.defineProperty(context, "log", { value: log });
+Object.defineProperty(context, "writeDevice", { value: writeDevice });
+Object.defineProperty(context, "readDevice", { value: readDevice });
+Object.defineProperty(context, "_X_WIS7_X_", { value: _X_WIS7_X_ });
 
 // Monkey-patch Math.random() to make it deterministic
 context.random = random;

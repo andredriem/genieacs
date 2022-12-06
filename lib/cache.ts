@@ -57,9 +57,16 @@ export async function set(
   );
 }
 
-export async function pop(key: string): Promise<string> {
-  const res = await cacheCollection.findOneAndDelete({ _id: key });
-  return res.value?.value;
+export async function pop(key: string): Promise<any> {
+  const promiseTimeouts = [500, 300, 200, 500];
+  for(const timeout of promiseTimeouts){
+    var res = await cacheCollection.findOneAndDelete({ _id: key });
+    if (res?.["value"]) return res["value"]["value"];
+    await new Promise(resolve => setTimeout(resolve, timeout))
+    res = await cacheCollection.findOneAndDelete({ _id: key });
+    if (res?.["value"]) return res["value"]["value"];
+  }
+  return null;
 }
 
 export async function acquireLock(

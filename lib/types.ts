@@ -126,6 +126,11 @@ export interface SyncState {
 }
 
 export interface SessionContext {
+  analyTicsIteation?: number,
+  startAnalytics?: boolean,
+  analyticsStorage?: object,
+  analyTicsIteationFinished?: boolean,
+  cpeResponse?: CpeResponse,
   sessionId?: string;
   timestamp: number;
   deviceId: string;
@@ -145,6 +150,7 @@ export interface SessionContext {
   rpcCount: number;
   iteration: number;
   cycle: number;
+  previousAnalyticsRun?: number;
   extensionsCache: any;
   declarations: Declaration[][];
   faults?: { [channel: string]: SessionFault };

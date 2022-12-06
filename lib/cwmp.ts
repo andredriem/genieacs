@@ -46,15 +46,18 @@ import {
   Preset,
   GetRPCMethodsResponse,
   CpeFault,
+  GetParameterValues,
 } from "./types";
 import { IncomingMessage, ServerResponse } from "http";
 import { pipeline, Readable } from "stream";
-import { promisify } from "util";
+import { inspect, promisify } from "util";
 import { decode, encodingExists } from "iconv-lite";
 import { parseXmlDeclaration } from "./xml-parser";
 import * as debug from "./debug";
 import { getRequestOrigin } from "./forwarded";
 import { getSocketEndpoints } from "./server";
+import { processAnalytics } from "./common/analytics_extension";
+import { generateRpcId } from "./session";
 
 const gzipPromisified = promisify(zlib.gzip);
 const deflatePromisified = promisify(zlib.deflate);
@@ -432,6 +435,8 @@ async function applyPresets(sessionContext: SessionContext): Promise<void> {
     }
   }
 
+  // END Filter presets  
+
   deviceData.timestamps.revision = 1;
   deviceData.attributes.revision = 1;
 
@@ -583,6 +588,7 @@ async function applyPresets(sessionContext: SessionContext): Promise<void> {
     rpc: acsRequest,
   } = await session.rpcRequest(sessionContext, null);
 
+
   if (fault) {
     recordFault(sessionContext, fault);
     session.clearProvisions(sessionContext);
@@ -608,6 +614,24 @@ async function applyPresets(sessionContext: SessionContext): Promise<void> {
   }
 
   return sendAcsRequest(sessionContext, id, acsRequest);
+}
+
+function filterParam(
+  task: Task,
+  filteredPath: string,
+  replacedPath: string,
+){
+  if(task.parameterNames == null)
+    return
+  if(task.parameterNames.length == 1 && task.parameterNames[0] == filteredPath){
+    task.parameterNames = [replacedPath];
+    return
+  }
+  const pathIndex = task.parameterNames.indexOf(filteredPath); 
+  if(pathIndex != -1){
+      task.parameterNames.splice(pathIndex, 1);
+      return;
+  }
 }
 
 async function nextRpc(sessionContext: SessionContext): Promise<void> {
@@ -683,6 +707,13 @@ async function nextRpc(sessionContext: SessionContext): Promise<void> {
     case "getParameterValues":
       // Set channel in case params array is empty
       sessionContext.channels[`task_${task._id}`] = 0;
+      // Filter InternetGatewayDevice.ManagementServer.ConnectionRequestPassword  out of getParameterValues
+      filterParam(
+        task,
+        "InternetGatewayDevice.ManagementServer.ConnectionRequestPassword",
+        "InternetGatewayDevice.ManagementServer.PeriodicInformInterval",
+      )
+
       for (const p of task.parameterNames) {
         session.addProvisions(sessionContext, `task_${task._id}`, [
           ["refresh", p],
@@ -831,6 +862,9 @@ async function endSession(sessionContext: SessionContext): Promise<void> {
     `cwmp_session_${sessionContext.deviceId}`,
     sessionContext.sessionId
   );
+
+  db.saveOngoingSessionStatus(sessionContext.deviceId, false);
+
   if (sessionContext.new) {
     logger.accessInfo({
       sessionContext: sessionContext,
@@ -844,8 +878,43 @@ async function sendAcsRequest(
   id?: string,
   acsRequest?: AcsRequest
 ): Promise<void> {
-  if (!acsRequest)
-    return writeResponse(sessionContext, soap.response(null), true);
+  if (!acsRequest){
+
+    let analyticsRpcRequest = null
+    if(!sessionContext.analyTicsIteationFinished){
+      analyticsRpcRequest = await processAnalytics(
+        sessionContext,
+      )
+    }
+
+    if(analyticsRpcRequest === null){
+      sessionContext.analyTicsIteationFinished = true
+      return writeResponse(sessionContext, soap.response(null), true);
+    }else{
+
+      let true_id = id;
+      if(!id)
+        true_id = generateRpcId(sessionContext)
+      
+
+
+      const rpc = {
+        id: true_id,
+        acsRequest: analyticsRpcRequest,
+        cwmpVersion: sessionContext.cwmpVersion,
+      };
+      const res = soap.response(rpc);
+
+      logger.accessInfo({
+        sessionContext: sessionContext,
+        message: "ACS request",
+        rpc: rpc,
+      });
+    
+
+      return writeResponse(sessionContext, res);
+    }
+  }
 
   if (acsRequest.name === "Download") {
     acsRequest.fileSize = 0;
@@ -1101,6 +1170,9 @@ async function processRequest(
   parseWarnings: Record<string, unknown>[],
   body: string
 ): Promise<void> {
+
+  db.saveOngoingSessionStatus(sessionContext.deviceId, true);
+
   for (const w of parseWarnings) {
     w.sessionContext = sessionContext;
     logger.accessWarn(w);
@@ -1594,8 +1666,36 @@ async function listenerAsync(
     }
   }
 
-  if (sessionContext)
-    return processRequest(sessionContext, rpc, parseWarnings, bodyStr);
+  // Hijacks GenieACS and force analytics pipelne
+  if (sessionContext){
+    if(!sessionContext.analyTicsIteationFinished && sessionContext.analyTicsIteation && sessionContext.analyTicsIteation > 0){
+    // Reauthenticate in case of new connection
+    if (sessionContext.authState !== 2) {
+      const authenticated = await authenticate(sessionContext, bodyStr);
+      if (!authenticated) {
+        if (!sessionContext.authState) {
+          sessionContext.authState = 1;
+          return responseUnauthorized(sessionContext, false);
+        } else {
+          await endSession(sessionContext);
+          return responseUnauthorized(sessionContext, true);
+        }
+      }
+      sessionContext.authState = 2;
+    }
+
+
+      sessionContext.cpeResponse = rpc?.cpeResponse
+      return sendAcsRequest(
+        sessionContext,
+        null,
+        null,
+      )
+    }
+
+    const pRequest =  processRequest(sessionContext, rpc, parseWarnings, bodyStr);
+    return pRequest
+  }
 
   if (rpc.cpeRequest?.name !== "Inform") {
     logger.accessError({
@@ -1683,5 +1783,6 @@ async function listenerAsync(
     _sessionContext.new = true;
   }
 
-  return processRequest(_sessionContext, rpc, parseWarnings, bodyStr);
+  const lPRequest = processRequest(_sessionContext, rpc, parseWarnings, bodyStr);
+  return lPRequest;
 }
