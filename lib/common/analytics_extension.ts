@@ -20,7 +20,6 @@ try {
 export async function processAnalytics(
   sessionContext: SessionContext,
 ): Promise<AcsRequest | null>{
-  sessionContext.debug = true
 
   if(sessionContext.analyticsStorage === undefined)
     sessionContext.analyticsStorage = {};
