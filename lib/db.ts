@@ -31,6 +31,7 @@ import {
 } from "./types";
 import Path from "./common/path";
 import * as MongoTypes from "./mongodb-types";
+import { warn } from "./logger.js";
 
 export let tasksCollection: Collection<MongoTypes.Task>,
   devicesCollection: Collection,
@@ -343,6 +344,12 @@ export async function saveDevice(
 ): Promise<void> {
   const update = { $set: {}, $unset: {}, $addToSet: {}, $pull: {} };
 
+  // Check if device has a webhook timestamp newer than 3 minutes (timestam is in Date format)
+  let shouldTriggerWebhook = false;
+  if(deviceData['_webhookTimestamp'] && deviceData['_webhookTimestamp'].getTime() > Date.now() - 1000 * 60 * 3) 
+    shouldTriggerWebhook = true;
+  
+
   for (const diff of deviceData.timestamps.diff()) {
     if (diff[0].wildcard !== 1 << (diff[0].length - 1)) continue;
 
@@ -634,6 +641,34 @@ export async function saveDevice(
   if (update2) {
     await devicesCollection.updateOne({ _id: deviceId }, update2);
     return;
+  }
+
+  // check shouldTriggerWebhook and ENV.WEBHOOK_ENDPOINT and ENV.WEBHOOK_AUTHORIZATION_HEADER are set
+  if(shouldTriggerWebhook && process.env.WEBHOOK_ENDPOINT && process.env.WEBHOOK_AUTHORIZATION_HEADER) {
+    const webhookEndpoint = process.env.WEBHOOK_ENDPOINT;
+    const webhookAuthorizationHeader = process.env.WEBHOOK_AUTHORIZATION_HEADER;
+    const webhookBody = {
+      deviceId: deviceId,
+    }
+    const webhookOptions = {
+      headers: {
+        'Authorization': webhookAuthorizationHeader,
+        'Content-Type': 'application/json'
+      }
+    }
+    
+    // makes async void fetch call
+    void fetch(webhookEndpoint, {
+      method: 'POST',
+      body: JSON.stringify(webhookBody),
+      ...webhookOptions
+    }).catch(
+      () => {
+        warn({
+          message: "Failed to trigger webhook",
+        });
+      }
+    );
   }
 }
 
