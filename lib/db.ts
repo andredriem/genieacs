@@ -336,6 +336,12 @@ export async function fetchDevice(
   return res;
 }
 
+const WEBHOOK_ENDPOINT = process.env.WEBHOOK_ENDPOINT ?? undefined
+let WEBHOOK_HEADERS = undefined
+try{
+  WEBHOOK_HEADERS = JSON.parse(process.env.WEBHOOK_HEADERS)
+}catch(err){}
+
 export async function saveDevice(
   deviceId: string,
   deviceData: DeviceData,
@@ -644,24 +650,16 @@ export async function saveDevice(
   }
 
   // check shouldTriggerWebhook and ENV.WEBHOOK_ENDPOINT and ENV.WEBHOOK_AUTHORIZATION_HEADER are set
-  if(shouldTriggerWebhook && process.env.WEBHOOK_ENDPOINT && process.env.WEBHOOK_AUTHORIZATION_HEADER) {
-    const webhookEndpoint = process.env.WEBHOOK_ENDPOINT;
-    const webhookAuthorizationHeader = process.env.WEBHOOK_AUTHORIZATION_HEADER;
+  if(shouldTriggerWebhook && WEBHOOK_ENDPOINT && WEBHOOK_HEADERS) {
     const webhookBody = {
       deviceId: deviceId,
     }
-    const webhookOptions = {
-      headers: {
-        'Authorization': webhookAuthorizationHeader,
-        'Content-Type': 'application/json'
-      }
-    }
     
     // makes async void fetch call
-    void fetch(webhookEndpoint, {
+    void fetch(WEBHOOK_ENDPOINT, {
       method: 'POST',
       body: JSON.stringify(webhookBody),
-      ...webhookOptions
+      headers: WEBHOOK_HEADERS,
     }).catch(
       () => {
         warn({
