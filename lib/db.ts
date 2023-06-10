@@ -654,12 +654,18 @@ export async function saveDevice(
     const webhookBody = {
       deviceId: deviceId,
     }
+
+    const controller = new AbortController();
+    setTimeout(() =>{
+      controller.abort();
+    }, 5000);
     
     // makes async void fetch call
     void fetch(WEBHOOK_ENDPOINT, {
       method: 'POST',
       body: JSON.stringify(webhookBody),
       headers: WEBHOOK_HEADERS,
+      signal: controller.signal,
     }).catch(
       () => {
         warn({
