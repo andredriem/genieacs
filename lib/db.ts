@@ -329,6 +329,17 @@ export async function fetchDevice(
           ]);
         }
         break;
+      case "_webhookTimestamp":
+          res.push([
+            Path.parse("WebhookTimestamp"),
+            timestamp,
+            {
+              object: [timestamp, 0],
+              writable: [timestamp, 0],
+              value: [timestamp, [v, "xsd:dateTime"]],
+            },
+          ]);
+        break;
       default:
         if (!k.startsWith("_")) storeParams(v, k, 1, ts);
     }
@@ -340,7 +351,10 @@ const WEBHOOK_ENDPOINT = process.env.WEBHOOK_ENDPOINT ?? undefined
 let WEBHOOK_HEADERS = undefined
 try{
   WEBHOOK_HEADERS = JSON.parse(process.env.WEBHOOK_HEADERS)
-}catch(err){}
+  WEBHOOK_HEADERS['accept'] = 'application/json'
+}catch(err){
+  // eslint-disable-next-line no-empty
+}
 
 export async function saveDevice(
   deviceId: string,
@@ -352,9 +366,16 @@ export async function saveDevice(
 
   // Check if device has a webhook timestamp newer than 3 minutes (timestam is in Date format)
   let shouldTriggerWebhook = false;
-  if(deviceData['_webhookTimestamp'] && deviceData['_webhookTimestamp'].getTime() > Date.now() - 1000 * 60 * 3) 
+
+  let webhookTimestamp: Date | undefined = undefined
+  const currentWebhookTimestamp = deviceData.attributes.get(Path.parse("WebhookTimestamp"))
+  if(currentWebhookTimestamp !== undefined && currentWebhookTimestamp.value !== undefined){
+    const b = currentWebhookTimestamp.value[1][0]
+    if(typeof currentWebhookTimestamp.value[1][0] === 'string')
+    webhookTimestamp = new Date(currentWebhookTimestamp.value[1][0])
+  }
+  if(webhookTimestamp !== undefined && webhookTimestamp.getTime() > Date.now() - 1000 * 60 * 3)
     shouldTriggerWebhook = true;
-  
 
   for (const diff of deviceData.timestamps.diff()) {
     if (diff[0].wildcard !== 1 << (diff[0].length - 1)) continue;
@@ -644,12 +665,8 @@ export async function saveDevice(
   if (!result.matchedCount && !result.upsertedCount)
     throw new Error(`Device ${deviceId} not found in database`);
 
-  if (update2) {
-    await devicesCollection.updateOne({ _id: deviceId }, update2);
-    return;
-  }
-
   // check shouldTriggerWebhook and ENV.WEBHOOK_ENDPOINT and ENV.WEBHOOK_AUTHORIZATION_HEADER are set
+
   if(shouldTriggerWebhook && WEBHOOK_ENDPOINT && WEBHOOK_HEADERS) {
     const webhookBody = {
       deviceId: deviceId,
@@ -673,13 +690,20 @@ export async function saveDevice(
         });
       }
     );
+
+
+  }
+
+  if (update2) {
+    await devicesCollection.updateOne({ _id: deviceId }, update2);
+    return;
   }
 }
 
 export async function saveOngoingSessionStatus(
   id: string,
   ongoingSession: boolean,
-  ) {
+  ): Promise<void> {
   
   const updateValues = {
     $set: {
@@ -687,7 +711,7 @@ export async function saveOngoingSessionStatus(
     }
   }
 
-  devicesCollection.updateOne(
+  void devicesCollection.updateOne(
     { _id: id },
     updateValues,
   );
@@ -698,7 +722,7 @@ export async function saveOngoingSessionStatus(
 export async function saveAnalyticsTimestamp(
   id: string,
   timestamp: number,
-  ){
+  ): Promise<void>{
   
   const updateValues = {
     $set: {
@@ -706,7 +730,7 @@ export async function saveAnalyticsTimestamp(
     }
   }
 
-  analyticsCollection.updateOne(
+  void analyticsCollection.updateOne(
     { _id: id },
     updateValues,
     { upsert: true }
