@@ -50,6 +50,7 @@ import {
   AcsResponse,
 } from "./types";
 import Path from "./common/path";
+import * as logger from "./logger";
 
 const SERVER_NAME = `GenieACS/${VERSION}`;
 
@@ -601,6 +602,19 @@ function Inform(xml: Element): InformRequest {
         retryCount = parseInt(c.text);
         break;
     }
+  }
+
+  // There is a bug in some ZTE devices where the OUI is not included in the DeviceId
+  // XML, so we need to add it manually.
+  if (!deviceId.OUI && deviceId.Manufacturer == 'ZTE' && deviceId.ProductClass == 'ZXHN H199A'){
+    deviceId.OUI = '746F88';
+  }
+
+  // Blank OUIs seems to be an issue with some devices, issue an warning if there is none
+  if (!deviceId.OUI){
+    logger.accessError({
+      message: `Device sent an Inform with a blank OUI. Details: ${JSON.stringify(deviceId)}`,
+    });
   }
 
   if (!deviceId || !deviceId.SerialNumber || !deviceId.OUI)
