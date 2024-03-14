@@ -41,10 +41,16 @@ const getFile = memoize(
     filename: string
   ): Promise<Iterable<Buffer>> => {
     const chunks: Buffer[] = [];
-    const downloadStream = filesBucket.openDownloadStreamByName(filename);
-    for await (const chunk of downloadStream) chunks.push(chunk);
-    // Node 12-14 don't throw error when stream is closed prematurely.
-    // However, we don't need to check for that since we're checking file size.
+    try{
+      const downloadStream = filesBucket.openDownloadStreamByName(filename);
+      for await (const chunk of downloadStream) chunks.push(chunk);
+    } catch (err) {
+      // We might just ignore this error, because we
+      // check the file size later anyway.
+      if (err.code !== "ERR_STREAM_PREMATURE_CLOSE")
+        throw err;
+    }
+
     if (size !== chunks.reduce((a, b) => a + b.length, 0))
       throw new Error("File size mismatch");
     return chunks;
