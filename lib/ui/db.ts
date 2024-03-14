@@ -190,6 +190,17 @@ export async function updateDeviceTags(
   if (add?.length) object["$addToSet"] = { _tags: { $each: add } };
   if (pull?.length) object["$pullAll"] = { _tags: pull };
 
+  const now = new Date();
+  // Set tags with timestamp
+  add?.forEach((tag) => {
+    if (object["$set"] === undefined) object["$set"] = {};
+    object["$set"][`_tagsWithTimestamp.${tag}`] = now;
+  })
+  pull?.forEach((tag) => {
+    if (object["$unset"] === undefined) object["$unset"] = {};
+    object["$unset"][`_tagsWithTimestamp.${tag}`] = 1;
+  })
+
   await collection.updateOne({ _id: deviceId }, object);
 }
 

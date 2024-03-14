@@ -345,7 +345,12 @@ export function listener(
       if (request.method === "POST") {
         collections.devices.updateOne(
           { _id: deviceId },
-          { $addToSet: { _tags: tag } },
+          { 
+            $addToSet: { _tags: tag },
+            $set: {
+              [`_tagsWithTimestamp.${tag}`]: Date.now(),
+            }
+          },
           (err) => {
             if (err) return void throwError(err, response);
             response.writeHead(200);
@@ -355,7 +360,12 @@ export function listener(
       } else if (request.method === "DELETE") {
         collections.devices.updateOne(
           { _id: deviceId },
-          { $pull: { _tags: tag } },
+          { 
+            $pull: { _tags: tag },
+            $unset: {
+              [`_tagsWithTimestamp.${tag}`]: 1,
+            }
+          },
           (err) => {
             if (err) return void throwError(err, response);
 

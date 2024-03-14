@@ -489,6 +489,11 @@ export async function saveDevice(
             update["$addToSet"]["_tags"]["$each"].push(
               decodeTag(path.segments[1] as string)
             );
+
+            const timestampAdded = new Date();
+            // Creates an alternative object to store the timestamp where the
+            // tag is the key and the timestamp is the value
+            update["$set"][`_tagsWithTimestamp.${path.segments[1] as string}`] = timestampAdded;
           } else {
             if (!update["$pull"]["_tags"]) {
               update["$pull"]["_tags"] = {
@@ -498,6 +503,10 @@ export async function saveDevice(
             update["$pull"]["_tags"]["$in"].push(
               decodeTag(path.segments[1] as string)
             );
+
+            // Removes the tag from the alternative object
+            update["$unset"][`_tagsWithTimestamp.${path.segments[1] as string}`] = 1;
+
           }
         }
 
