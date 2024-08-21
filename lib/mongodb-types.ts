@@ -112,6 +112,7 @@ export interface Device {
   _lastInform: Date;
   _registered: Date;
   _tags?: string[];
+  _tagsWithTimestamp?: { [tag: string]: number };
   _timestamp?: Date;
 }
 
@@ -163,4 +164,11 @@ export interface User {
   password: string;
   roles: string;
   salt: string;
+}
+
+// André: I don't want to deal with typescript for the analytics colleciton
+// so only mandatory field is _id and anything else goe
+export interface Analytics {
+  _id: string;
+  [key: string]: any;
 }
