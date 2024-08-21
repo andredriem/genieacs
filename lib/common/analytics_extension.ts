@@ -1,8 +1,6 @@
-import { AcsRequest, CpeResponse, DeviceData, GetParameterNames, GetParameterValues, SessionContext } from "../types";
+import { AcsRequest, GetParameterNames, GetParameterValues, SessionContext } from "../types";
 import * as logger from "../logger";
-import Path from "./path";
-import * as device from "../device";
-import * as db from "../db";
+import { getAnalyticsTimestamp, saveAnalyticsTimestamp } from "../cwmp/db.ts";
 //import analytics_stage_data from "./genieacs_analytics"
 
 
@@ -37,7 +35,7 @@ export async function processAnalytics(
 
   // Fetches for lastAnalyticsRun virtual parameter
   if(sessionContext.previousAnalyticsRun === undefined)
-    sessionContext.previousAnalyticsRun = await db.getAnalyticsTimestamp(sessionContext.deviceId) 
+    sessionContext.previousAnalyticsRun = await getAnalyticsTimestamp(sessionContext.deviceId) 
 
   const context = {
     analyTicsIteation: sessionContext.analyTicsIteation,
@@ -65,7 +63,7 @@ export async function processAnalytics(
 
     // update last analytics session
     if(sessionContext.previousAnalyticsRun !== sessionContext.timestamp){
-      db.saveAnalyticsTimestamp(sessionContext.deviceId, sessionContext.timestamp)
+      await saveAnalyticsTimestamp(sessionContext.deviceId, sessionContext.timestamp)
     }
       
     //void exportCurrentDeviceData(sessionContext.deviceData)
