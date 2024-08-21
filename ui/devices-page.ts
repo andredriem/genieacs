@@ -1,34 +1,15 @@
-/**
- * Copyright 2013-2019  GenieACS Inc.
- *
- * This file is part of GenieACS.
- *
- * GenieACS is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * GenieACS is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with GenieACS.  If not, see <http://www.gnu.org/licenses/>.
- */
-
 import { ClosureComponent, Component, Children } from "mithril";
-import { m } from "./components";
-import config from "./config";
-import indexTableComponent from "./index-table-component";
-import filterComponent from "./filter-component";
-import * as store from "./store";
-import { queueTask, stageDownload } from "./task-queue";
-import * as notifications from "./notifications";
-import { parse, stringify, map } from "../lib/common/expression/parser";
-import { evaluate, extractParams } from "../lib/common/expression/util";
-import memoize from "../lib/common/memoize";
-import * as smartQuery from "./smart-query";
+import { m } from "./components.ts";
+import config from "./config.ts";
+import indexTableComponent from "./index-table-component.ts";
+import filterComponent from "./filter-component.ts";
+import * as store from "./store.ts";
+import { queueTask, stageDownload } from "./task-queue.ts";
+import * as notifications from "./notifications.ts";
+import { parse, stringify, map } from "../lib/common/expression/parser.ts";
+import { evaluate, extractParams } from "../lib/common/expression/util.ts";
+import memoize from "../lib/common/memoize.ts";
+import * as smartQuery from "./smart-query.ts";
 
 const PAGE_SIZE = config.ui.pageSize || 10;
 
@@ -61,7 +42,7 @@ const unpackSmartQuery = memoize((query) => {
 });
 
 export function init(
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     if (!window.authorizer.hasAccess("devices", 2))
@@ -97,8 +78,8 @@ function renderActions(selected: Set<string>): Children {
           queueTask(...tasks);
         },
       },
-      "Reboot"
-    )
+      "Reboot",
+    ),
   );
 
   buttons.push(
@@ -115,8 +96,8 @@ function renderActions(selected: Set<string>): Children {
           queueTask(...tasks);
         },
       },
-      "Reset"
-    )
+      "Reset",
+    ),
   );
 
   buttons.push(
@@ -132,8 +113,8 @@ function renderActions(selected: Set<string>): Children {
           });
         },
       },
-      "Push file"
-    )
+      "Push file",
+    ),
   );
 
   buttons.push(
@@ -163,8 +144,8 @@ function renderActions(selected: Set<string>): Children {
           if (--counter === 0) store.setTimestamp(Date.now());
         },
       },
-      "Delete"
-    )
+      "Delete",
+    ),
   );
 
   buttons.push(
@@ -195,8 +176,8 @@ function renderActions(selected: Set<string>): Children {
           if (--counter === 0) store.setTimestamp(Date.now());
         },
       },
-      "Tag"
-    )
+      "Tag",
+    ),
   );
 
   buttons.push(
@@ -208,7 +189,7 @@ function renderActions(selected: Set<string>): Children {
         onclick: () => {
           const ids = Array.from(selected);
           const tag = prompt(
-            `Enter tag to unassign from ${ids.length} devices:`
+            `Enter tag to unassign from ${ids.length} devices:`,
           );
           if (!tag) return;
 
@@ -229,8 +210,8 @@ function renderActions(selected: Set<string>): Children {
           if (--counter === 0) store.setTimestamp(Date.now());
         },
       },
-      "Untag"
-    )
+      "Untag",
+    ),
   );
 
   return buttons;
@@ -270,7 +251,7 @@ export const component: ClosureComponent = (): Component => {
         const _sort = {};
         for (const index of sortedAttrs) {
           const param = memoizedGetSortable(
-            attributes[Math.abs(index) - 1].parameter
+            attributes[Math.abs(index) - 1].parameter,
           );
           _sort[param] = Math.sign(index);
         }
@@ -296,7 +277,7 @@ export const component: ClosureComponent = (): Component => {
         return m.context(
           { device: device, parameter: attr.parameter },
           attr.type || "parameter",
-          attr
+          attr,
         );
       };
 
@@ -314,10 +295,10 @@ export const component: ClosureComponent = (): Component => {
           "a",
           {
             href: `#!/devices/${encodeURIComponent(
-              device["DeviceID.ID"].value[0]
+              device["DeviceID.ID"].value[0],
             )}`,
           },
-          "Show"
+          "Show",
         );
       };
 

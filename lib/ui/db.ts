@@ -1,44 +1,368 @@
-/**
- * Copyright 2013-2019  GenieACS Inc.
- *
- * This file is part of GenieACS.
- *
- * GenieACS is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * GenieACS is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with GenieACS.  If not, see <http://www.gnu.org/licenses/>.
- */
+import { Script } from "node:vm";
+import { Readable } from "node:stream";
+import { Collection, ObjectId, WithoutId } from "mongodb";
+import { encodeTag } from "../util.ts";
+import { evaluate } from "../common/expression/util.ts";
+import { Expression, Fault, Task } from "../types.ts";
+import { collections, filesBucket } from "../db/db.ts";
+import { convertOldPrecondition, optimizeProjection } from "../db/util.ts";
+import * as MongoTypes from "../db/types.ts";
+import { parse, parseList, stringify } from "../common/expression/parser.ts";
+import { toMongoQuery } from "../db/synth.ts";
 
-import { Collection, GridFSBucket, ObjectId } from "mongodb";
-import { Script } from "vm";
-import { collections, onConnect, optimizeProjection } from "../db";
-import * as mongodbFunctions from "../mongodb-functions";
-import { evaluate } from "../common/expression/util";
-import { QueryOptions, Expression } from "../types";
-import { Readable } from "stream";
+function processDeviceProjection(
+  projection: Record<string, 1>,
+): Record<string, 1> {
+  if (!projection) return projection;
+  const p = {};
+  for (const [k, v] of Object.entries(projection)) {
+    if (k === "DeviceID.ID") {
+      p["_id"] = 1;
+    } else if (k.startsWith("DeviceID")) {
+      p["_deviceId._SerialNumber"] = v;
+      p["_deviceId._OUI"] = v;
+      p["_deviceId._ProductClass"] = v;
+      p["_deviceId._Manufacturer"] = v;
+    } else if (k.startsWith("Tags")) {
+      p["_tags"] = v;
+    } else if (k.startsWith("Events")) {
+      p["_lastInform"] = v;
+      p["_registered"] = v;
+      p["_lastBoot"] = v;
+      p["_lastBootstrap"] = v;
+    } else {
+      p[k] = v;
+    }
+  }
 
-let filesBucket: GridFSBucket;
+  return p;
+}
 
-onConnect(async (db) => {
-  filesBucket = new GridFSBucket(db);
-});
+function processDeviceSort(
+  sort: Record<string, number>,
+): Record<string, number> {
+  if (!sort) return sort;
+  const s = {};
+  for (const [k, v] of Object.entries(sort)) {
+    if (k === "DeviceID.ID") s["_id"] = v;
+    else if (k.startsWith("DeviceID.")) s[`_deviceId._${k.slice(9)}`] = v;
+    else if (k === "Events.Inform") s["_lastInform"] = v;
+    else if (k === "Events.Registered") s["_registered"] = v;
+    else if (k === "Events.1_BOOT") s["_lastBoot"] = v;
+    else if (k === "Events.0_BOOTSTRAP") s["_lastBootstrap"] = v;
+    else s[`${k}._value`] = v;
+  }
+
+  return s;
+}
+
+function parseDate(d: Date): number | string {
+  const n = +d;
+  return isNaN(n) ? "" + d : n;
+}
+
+interface FlatAttributes {
+  object?: boolean;
+  objectTimestamp?: number;
+  writable?: boolean;
+  writableTimestamp?: number;
+  value?: [string | number | boolean, string];
+  valueTimestamp?: number;
+  notification?: number;
+  notificationTimestamp?: number;
+  accessList?: string[];
+  accessListTimestamp?: number;
+}
+
+export interface FlatDevice {
+  [param: string]: FlatAttributes;
+}
+
+export function flattenDevice(device: Record<string, unknown>): FlatDevice {
+  function recursive(
+    input,
+    root: string,
+    output: FlatDevice,
+    timestamp: number,
+  ): void {
+    for (const [name, tree] of Object.entries(input)) {
+      if (!root) {
+        if (name === "_lastInform") {
+          output["Events.Inform"] = {
+            value: [parseDate(tree as Date), "xsd:dateTime"],
+            valueTimestamp: timestamp,
+            writable: false,
+            writableTimestamp: timestamp,
+            object: false,
+            objectTimestamp: timestamp,
+          };
+        } else if (name === "_registered") {
+          output["Events.Registered"] = {
+            value: [parseDate(tree as Date), "xsd:dateTime"],
+            valueTimestamp: timestamp,
+            writable: false,
+            writableTimestamp: timestamp,
+            object: false,
+            objectTimestamp: timestamp,
+          };
+        } else if (name === "_lastBoot") {
+          output["Events.1_BOOT"] = {
+            value: [parseDate(tree as Date), "xsd:dateTime"],
+            valueTimestamp: timestamp,
+            writable: false,
+            writableTimestamp: timestamp,
+            object: false,
+            objectTimestamp: timestamp,
+          };
+        } else if (name === "_lastBootstrap") {
+          output["Events.0_BOOTSTRAP"] = {
+            value: [parseDate(tree as Date), "xsd:dateTime"],
+            valueTimestamp: timestamp,
+            writable: false,
+            writableTimestamp: timestamp,
+            object: false,
+            objectTimestamp: timestamp,
+          };
+        } else if (name === "_id") {
+          output["DeviceID.ID"] = {
+            value: [tree as string, "xsd:string"],
+            valueTimestamp: timestamp,
+            writable: false,
+            writableTimestamp: timestamp,
+            object: false,
+            objectTimestamp: timestamp,
+          };
+        } else if (name === "_deviceId") {
+          output["DeviceID.Manufacturer"] = {
+            value: [tree["_Manufacturer"], "xsd:string"],
+            valueTimestamp: timestamp,
+            writable: false,
+            writableTimestamp: timestamp,
+            object: false,
+            objectTimestamp: timestamp,
+          };
+          output["DeviceID.OUI"] = {
+            value: [tree["_OUI"], "xsd:string"],
+            valueTimestamp: timestamp,
+            writable: false,
+            writableTimestamp: timestamp,
+            object: false,
+            objectTimestamp: timestamp,
+          };
+          output["DeviceID.ProductClass"] = {
+            value: [tree["_ProductClass"], "xsd:string"],
+            valueTimestamp: timestamp,
+            writable: false,
+            writableTimestamp: timestamp,
+            object: false,
+            objectTimestamp: timestamp,
+          };
+          output["DeviceID.SerialNumber"] = {
+            value: [tree["_SerialNumber"], "xsd:string"],
+            valueTimestamp: timestamp,
+            writable: false,
+            writableTimestamp: timestamp,
+            object: false,
+            objectTimestamp: timestamp,
+          };
+        } else if (name === "_tags") {
+          output["Tags"] = {
+            writable: false,
+            writableTimestamp: timestamp,
+            object: true,
+            objectTimestamp: timestamp,
+          };
+
+          for (const t of tree as string[]) {
+            output[`Tags.${encodeTag(t)}`] = {
+              value: [true, "xsd:boolean"],
+              valueTimestamp: timestamp,
+              writable: true,
+              writableTimestamp: timestamp,
+              object: false,
+              objectTimestamp: timestamp,
+            };
+          }
+        }
+      }
+
+      if (name.startsWith("_")) continue;
+
+      let childrenTimestamp = timestamp;
+
+      if (!root) childrenTimestamp = +(input["_timestamp"] || 1);
+      else if (+input["_timestamp"] > timestamp)
+        childrenTimestamp = +input["_timestamp"];
+
+      const attrs: FlatAttributes = {};
+      if (tree["_value"] != null) {
+        attrs.value = [
+          tree["_value"] instanceof Date ? +tree["_value"] : tree["_value"],
+          tree["_type"],
+        ];
+        attrs.valueTimestamp = +(tree["_timestamp"] || childrenTimestamp);
+        attrs.object = false;
+        attrs.objectTimestamp = childrenTimestamp;
+      } else if (tree["_object"] != null) {
+        attrs.object = tree["_object"];
+        attrs.objectTimestamp = childrenTimestamp;
+      }
+
+      if (tree["_writable"] != null) {
+        attrs.writable = tree["_writable"];
+        attrs.writableTimestamp = childrenTimestamp;
+      }
+
+      if (tree["_notification"] != null) {
+        attrs.notification = tree["_notification"];
+        attrs.notificationTimestamp = +tree["_attributesTimestamp"] || 1;
+      }
+
+      if (tree["_accessList"] != null) {
+        attrs.accessList = tree["_accessList"];
+        attrs.accessListTimestamp = +tree["_attributesTimestamp"] || 1;
+      }
+
+      const r = root ? `${root}.${name}` : name;
+      output[r] = attrs;
+
+      if (attrs.object || tree["object"] == null)
+        recursive(tree, r, output, childrenTimestamp);
+    }
+  }
+
+  const newDevice: FlatDevice = {};
+  const timestamp = new Date((device["_lastInform"] as Date) || 1).getTime();
+  recursive(device, "", newDevice, timestamp);
+  return newDevice;
+}
+
+function flattenFault(fault: unknown): Fault {
+  const f = Object.assign({}, fault) as Fault;
+  if (f.timestamp) f.timestamp = +f.timestamp;
+  if (f["expiry"]) f["expiry"] = +f["expiry"];
+  return f as Fault;
+}
+
+function flattenTask(task: unknown): Task {
+  const t = Object.assign({}, task) as Task;
+  t._id = "" + t._id;
+  if (t["timestamp"]) t["timestamp"] = +t["timestamp"];
+  if (t.expiry) t.expiry = +t.expiry;
+  return t;
+}
+
+function flattenPreset(
+  preset: Record<string, unknown>,
+): Record<string, unknown> {
+  const p = Object.assign({}, preset);
+  if (p.precondition) {
+    try {
+      // Try parse to check expression validity
+      parse(p.precondition as string);
+    } catch (error) {
+      p.precondition = convertOldPrecondition(
+        JSON.parse(p.precondition as string),
+      );
+      p.precondition = (p.precondition as string).length
+        ? stringify(p.precondition as Expression)
+        : "";
+    }
+  }
+
+  if (p.events) {
+    const e = [];
+    for (const [k, v] of Object.entries(p.events)) e.push(v ? k : `-${k}`);
+    p.events = e.join(", ");
+  }
+
+  const provision = p.configurations[0];
+  if (
+    (p.configurations as any[]).length === 1 &&
+    provision.type === "provision" &&
+    provision.name &&
+    provision.name.length
+  ) {
+    p.provision = provision.name;
+    p.provisionArgs = provision.args
+      ? provision.args.map((a) => stringify(a)).join(", ")
+      : "";
+  }
+
+  delete p.configurations;
+  return p;
+}
+
+function flattenFile(file: Record<string, unknown>): Record<string, unknown> {
+  const f = {};
+  f["_id"] = file["_id"];
+  if (file.metadata) {
+    f["metadata.fileType"] = file["metadata"]["fileType"] || "";
+    f["metadata.oui"] = file["metadata"]["oui"] || "";
+    f["metadata.productClass"] = file["metadata"]["productClass"] || "";
+    f["metadata.version"] = file["metadata"]["version"] || "";
+  }
+  return f;
+}
+
+function preProcessPreset(data: Record<string, unknown>): MongoTypes.Preset {
+  const preset = Object.assign({}, data);
+
+  if (!preset.precondition) preset.precondition = "";
+  // Try parse to check expression validity
+  parse(preset.precondition as string);
+
+  preset.weight = parseInt(preset.weight as string) || 0;
+
+  const events = {};
+  if (preset.events) {
+    for (let e of (preset.events as string).split(",")) {
+      let v = true;
+      e = e.trim();
+      if (e.startsWith("-")) {
+        v = false;
+        e = e.slice(1).trim();
+      }
+      if (e) events[e] = v;
+    }
+  }
+
+  preset.events = events;
+
+  if (!preset.provision) throw new Error("Invalid preset provision");
+
+  const configuration = {
+    type: "provision",
+    name: preset.provision,
+    args: null,
+  };
+
+  if (preset.provisionArgs)
+    configuration.args = parseList(preset.provisionArgs as string);
+
+  delete preset.provision;
+  delete preset.provisionArgs;
+  preset.configurations = [configuration];
+  return preset as unknown as MongoTypes.Preset;
+}
+
+interface QueryOptions {
+  projection?: any;
+  skip?: number;
+  limit?: number;
+  sort?: {
+    [param: string]: number;
+  };
+}
 
 export async function* query(
   resource: string,
   filter: Expression,
-  options?: QueryOptions
+  options?: QueryOptions,
 ): AsyncGenerator<any, void, undefined> {
   options = options || {};
   filter = evaluate(filter, null, Date.now());
-  const q = mongodbFunctions.toMongoQuery(filter, resource);
+  const q = toMongoQuery(filter, resource);
   if (!q) return;
 
   const collection = collections[resource] as Collection<any>;
@@ -46,7 +370,7 @@ export async function* query(
   if (options.projection) {
     let projection = options.projection;
     if (resource === "devices")
-      projection = mongodbFunctions.processDeviceProjection(options.projection);
+      projection = processDeviceProjection(options.projection);
 
     if (resource === "presets") projection.configurations = 1;
     projection = optimizeProjection(projection);
@@ -64,35 +388,35 @@ export async function* query(
       .reduce(
         (obj, [k, v]) =>
           Object.assign(obj, { [k]: Math.min(Math.max(v, -1), 1) }),
-        {}
+        {},
       );
 
-    if (resource === "devices") s = mongodbFunctions.processDeviceSort(s);
+    if (resource === "devices") s = processDeviceSort(s);
     cursor.sort(s);
   }
 
   for await (let doc of cursor) {
-    if (resource === "devices") doc = mongodbFunctions.flattenDevice(doc);
-    else if (resource === "faults") doc = mongodbFunctions.flattenFault(doc);
-    else if (resource === "tasks") doc = mongodbFunctions.flattenTask(doc);
-    else if (resource === "presets") doc = mongodbFunctions.flattenPreset(doc);
-    else if (resource === "files") doc = mongodbFunctions.flattenFile(doc);
+    if (resource === "devices") doc = flattenDevice(doc);
+    else if (resource === "faults") doc = flattenFault(doc);
+    else if (resource === "tasks") doc = flattenTask(doc);
+    else if (resource === "presets") doc = flattenPreset(doc);
+    else if (resource === "files") doc = flattenFile(doc);
 
     yield doc;
   }
 }
 
 export function count(resource: string, filter: Expression): Promise<number> {
-  const collection = collections[resource] as Collection<unknown>;
+  const collection = collections[resource] as Collection<any>;
   filter = evaluate(filter, null, Date.now());
-  const q = mongodbFunctions.toMongoQuery(filter, resource);
+  const q = toMongoQuery(filter, resource);
   if (!q) return Promise.resolve(0);
   return collection.countDocuments(q);
 }
 
 export async function updateDeviceTags(
   deviceId: string,
-  tags: Record<string, boolean>
+  tags: Record<string, boolean>,
 ): Promise<void> {
   const add = [];
   const pull = [];
@@ -121,34 +445,21 @@ export async function updateDeviceTags(
   await collections.devices.updateOne({ _id: deviceId }, object);
 }
 
-async function putResource(resource, id, object): Promise<void> {
-  const collection = collections[resource] as Collection<unknown>;
-  await collection.replaceOne({ _id: id }, object, { upsert: true });
-}
-
-async function deleteResource(
-  resource: string,
-  id: string | ObjectId
-): Promise<void> {
-  const collection = collections[resource] as Collection<unknown>;
-  await collection.deleteOne({ _id: id });
-}
-
-export function putPreset(
+export async function putPreset(
   id: string,
-  object: Record<string, unknown>
+  object: Record<string, unknown>,
 ): Promise<void> {
-  object = mongodbFunctions.preProcessPreset(object);
-  return putResource("presets", id, object);
+  const p = preProcessPreset(object);
+  await collections.presets.replaceOne({ _id: id }, p, { upsert: true });
 }
 
-export function deletePreset(id: string): Promise<void> {
-  return deleteResource("presets", id);
+export async function deletePreset(id: string): Promise<void> {
+  await collections.presets.deleteOne({ _id: id });
 }
 
-export function putProvision(
+export async function putProvision(
   id: string,
-  object: Record<string, unknown>
+  object: { script: string },
 ): Promise<void> {
   if (!object.script) object.script = "";
   try {
@@ -159,21 +470,23 @@ export function putProvision(
   } catch (err) {
     if (err.stack?.startsWith(`${id}:`)) {
       return Promise.reject(
-        new Error(`${err.name} at ${err.stack.split("\n", 1)[0]}`)
+        new Error(`${err.name} at ${err.stack.split("\n", 1)[0]}`),
       );
     }
     return Promise.reject(err);
   }
-  return putResource("provisions", id, object);
+  await collections.provisions.replaceOne({ _id: id }, object, {
+    upsert: true,
+  });
 }
 
-export function deleteProvision(id: string): Promise<void> {
-  return deleteResource("provisions", id);
+export async function deleteProvision(id: string): Promise<void> {
+  await collections.provisions.deleteOne({ _id: id });
 }
 
-export function putVirtualParameter(
+export async function putVirtualParameter(
   id: string,
-  object: Record<string, unknown>
+  object: { script: string },
 ): Promise<void> {
   if (!object.script) object.script = "";
   try {
@@ -184,54 +497,58 @@ export function putVirtualParameter(
   } catch (err) {
     if (err.stack?.startsWith(`${id}:`)) {
       return Promise.reject(
-        new Error(`${err.name} at ${err.stack.split("\n", 1)[0]}`)
+        new Error(`${err.name} at ${err.stack.split("\n", 1)[0]}`),
       );
     }
     return Promise.reject(err);
   }
-  return putResource("virtualParameters", id, object);
+  await collections.virtualParameters.replaceOne({ _id: id }, object, {
+    upsert: true,
+  });
 }
 
-export function deleteVirtualParameter(id: string): Promise<void> {
-  return deleteResource("virtualParameters", id);
+export async function deleteVirtualParameter(id: string): Promise<void> {
+  await collections.virtualParameters.deleteOne({ _id: id });
 }
 
-export function putConfig(
+export async function putConfig(
   id: string,
-  object: Record<string, unknown>
+  object: WithoutId<MongoTypes.Config>,
 ): Promise<void> {
-  return putResource("config", id, object);
+  await collections.config.replaceOne({ _id: id }, object, { upsert: true });
 }
 
-export function deleteConfig(id: string): Promise<void> {
-  return deleteResource("config", id);
+export async function deleteConfig(id: string): Promise<void> {
+  await collections.config.deleteOne({ _id: id });
 }
 
-export function putPermission(
+export async function putPermission(
   id: string,
-  object: Record<string, unknown>
+  object: WithoutId<MongoTypes.Permission>,
 ): Promise<void> {
-  return putResource("permissions", id, object);
+  await collections.permissions.replaceOne({ _id: id }, object, {
+    upsert: true,
+  });
 }
 
-export function deletePermission(id: string): Promise<void> {
-  return deleteResource("permissions", id);
+export async function deletePermission(id: string): Promise<void> {
+  await collections.permissions.deleteOne({ _id: id });
 }
 
 export async function putUser(
   id: string,
-  object: Record<string, unknown>
+  object: Partial<WithoutId<MongoTypes.User>>,
 ): Promise<void> {
   // update instead of replace to keep the password if not set by user
   await collections.users.updateOne(
     { _id: id },
     { $set: object },
-    { upsert: true }
+    { upsert: true },
   );
 }
 
-export function deleteUser(id: string): Promise<void> {
-  return deleteResource("users", id);
+export async function deleteUser(id: string): Promise<void> {
+  await collections.users.deleteOne({ _id: id });
 }
 
 export function downloadFile(filename: string): Readable {
@@ -241,7 +558,7 @@ export function downloadFile(filename: string): Readable {
 export function putFile(
   filename: string,
   metadata: Record<string, string>,
-  contentStream: Readable
+  contentStream: Readable,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const uploadStream = filesBucket.openUploadStreamWithId(
@@ -249,7 +566,7 @@ export function putFile(
       filename,
       {
         metadata: metadata,
-      }
+      },
     );
 
     let readableEnded = false;
@@ -278,10 +595,10 @@ export async function deleteFile(filename: string): Promise<void> {
   await filesBucket.delete(filename as any);
 }
 
-export function deleteFault(id: string): Promise<void> {
-  return deleteResource("faults", id);
+export async function deleteFault(id: string): Promise<void> {
+  await collections.faults.deleteOne({ _id: id });
 }
 
-export function deleteTask(id: ObjectId): Promise<void> {
-  return deleteResource("tasks", id);
+export async function deleteTask(id: ObjectId): Promise<void> {
+  await collections.tasks.deleteOne({ _id: id });
 }

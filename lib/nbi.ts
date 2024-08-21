@@ -1,35 +1,19 @@
-/**
- * Copyright 2013-2019  GenieACS Inc.
- *
- * This file is part of GenieACS.
- *
- * GenieACS is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * GenieACS is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with GenieACS.  If not, see <http://www.gnu.org/licenses/>.
- */
-
-import { Collection, GridFSBucket, ObjectId } from "mongodb";
-import * as vm from "vm";
-import * as config from "./config";
-import { onConnect, optimizeProjection, collections } from "./db";
-import * as query from "./query";
-import * as apiFunctions from "./api-functions";
-import { IncomingMessage, ServerResponse } from "http";
-import * as cache from "./cache";
+import * as vm from "node:vm";
+import { IncomingMessage, ServerResponse } from "node:http";
+import { Collection, ObjectId } from "mongodb";
+import { getRevision, getConfig } from "./ui/local-cache.ts";
+import { filesBucket, collections } from "./db/db.ts";
+import { optimizeProjection } from "./db/util.ts";
+import * as query from "./query.ts";
+import * as apiFunctions from "./api-functions.ts";
+import * as cache from "./cache.ts";
 import { version as VERSION } from "../package.json";
-import { ping } from "./ping";
-import * as logger from "./logger";
-import { flattenDevice } from "./mongodb-functions";
-import { getRequestOrigin } from "./forwarded";
+import { ping } from "./ping.ts";
+import * as logger from "./logger.ts";
+import { flattenDevice } from "./ui/db.ts";
+import { getRequestOrigin } from "./forwarded.ts";
+import { acquireLock, releaseLock } from "./lock.ts";
+import { ResourceLockedError } from "./common/errors.ts";
 
 const DEVICE_TASKS_REGEX = /^\/devices\/([a-zA-Z0-9\-_%]+)\/tasks\/?$/;
 const TASKS_REGEX = /^\/tasks\/([a-zA-Z0-9\-_%]+)(\/[a-zA-Z_]*)?$/;
@@ -46,12 +30,6 @@ const VIRTUAL_PARAMETERS_REGEX =
   /^\/virtual_parameters\/([a-zA-Z0-9\-_%]+)\/?$/;
 const FAULTS_REGEX = /^\/faults\/([a-zA-Z0-9\-_%:]+)\/?$/;
 
-let filesBucket: GridFSBucket;
-
-onConnect(async (db) => {
-  filesBucket = new GridFSBucket(db);
-});
-
 async function getBody(request: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let readableEnded = false;
@@ -66,51 +44,36 @@ async function getBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-export function listener(
+export async function listener(
   request: IncomingMessage,
-  response: ServerResponse
-): void {
+  response: ServerResponse,
+): Promise<void> {
   response.setHeader("GenieACS-Version", VERSION);
 
   const origin = getRequestOrigin(request);
   const url = new URL(
     request.url,
-    (origin.encrypted ? "https://" : "http://") + origin.host
+    (origin.encrypted ? "https://" : "http://") + origin.host,
   );
 
-  let readableEnded = false;
-  // For Node 12.9+ we can just use stream.readableEnded
-  request.on("end", () => {
-    readableEnded = true;
-  });
+  const body = await getBody(request).catch(() => null);
+  // Ignore incomplete requests
+  if (body == null) return;
 
-  getBody(request)
-    .then((body) => {
-      logger.accessInfo(
-        Object.assign({}, Object.fromEntries(url.searchParams), {
-          remoteAddress: origin.remoteAddress,
-          message: `${request.method} ${url.pathname}`,
-        })
-      );
-      return handler(request, response, url, body);
-    })
-    .catch((err) => {
-      // Ignore incomplete requests
-      if (!readableEnded) return;
-
-      if (!response.headersSent) {
-        response.writeHead(500, { Connection: "close" });
-        response.end(`${err.name}: ${err.message}`);
-      }
-      throw err;
-    });
+  logger.accessInfo(
+    Object.assign({}, Object.fromEntries(url.searchParams), {
+      remoteAddress: origin.remoteAddress,
+      message: `${request.method} ${url.pathname}`,
+    }),
+  );
+  return handler(request, response, url, body);
 }
 
 async function handler(
   request: IncomingMessage,
   response: ServerResponse,
   url: URL,
-  body: Buffer
+  body: Buffer,
 ): Promise<void> {
   if (PRESETS_REGEX.test(url.pathname)) {
     const presetName = decodeURIComponent(PRESETS_REGEX.exec(url.pathname)[1]);
@@ -127,12 +90,12 @@ async function handler(
       await collections.presets.replaceOne({ _id: presetName }, preset, {
         upsert: true,
       });
-      await cache.del("presets_hash");
+      await cache.del("cwmp-local-cache-hash");
       response.writeHead(200);
       response.end();
     } else if (request.method === "DELETE") {
       await collections.presets.deleteOne({ _id: presetName });
-      await cache.del("presets_hash");
+      await cache.del("cwmp-local-cache-hash");
       response.writeHead(200);
       response.end();
     } else {
@@ -154,12 +117,12 @@ async function handler(
       await collections.objects.replaceOne({ _id: objectName }, object, {
         upsert: true,
       });
-      await cache.del("presets_hash");
+      await cache.del("cwmp-local-cache-hash");
       response.writeHead(200);
       response.end();
     } else if (request.method === "DELETE") {
       await collections.objects.deleteOne({ _id: objectName });
-      await cache.del("presets_hash");
+      await cache.del("cwmp-local-cache-hash");
       response.writeHead(200);
       response.end();
     } else {
@@ -168,7 +131,7 @@ async function handler(
     }
   } else if (PROVISIONS_REGEX.test(url.pathname)) {
     const provisionName = decodeURIComponent(
-      PROVISIONS_REGEX.exec(url.pathname)[1]
+      PROVISIONS_REGEX.exec(url.pathname)[1],
     );
     if (request.method === "PUT") {
       const object = {
@@ -187,12 +150,12 @@ async function handler(
       await collections.provisions.replaceOne({ _id: provisionName }, object, {
         upsert: true,
       });
-      await cache.del("presets_hash");
+      await cache.del("cwmp-local-cache-hash");
       response.writeHead(200);
       response.end();
     } else if (request.method === "DELETE") {
       await collections.provisions.deleteOne({ _id: provisionName });
-      await cache.del("presets_hash");
+      await cache.del("cwmp-local-cache-hash");
       response.writeHead(200);
       response.end();
     } else {
@@ -201,7 +164,7 @@ async function handler(
     }
   } else if (VIRTUAL_PARAMETERS_REGEX.test(url.pathname)) {
     const virtualParameterName = decodeURIComponent(
-      VIRTUAL_PARAMETERS_REGEX.exec(url.pathname)[1]
+      VIRTUAL_PARAMETERS_REGEX.exec(url.pathname)[1],
     );
     if (request.method === "PUT") {
       const object = {
@@ -220,16 +183,16 @@ async function handler(
       await collections.virtualParameters.replaceOne(
         { _id: virtualParameterName },
         object,
-        { upsert: true }
+        { upsert: true },
       );
-      await cache.del("presets_hash");
+      await cache.del("cwmp-local-cache-hash");
       response.writeHead(200);
       response.end();
     } else if (request.method === "DELETE") {
       await collections.virtualParameters.deleteOne({
         _id: virtualParameterName,
       });
-      await cache.del("presets_hash");
+      await cache.del("cwmp-local-cache-hash");
       response.writeHead(200);
       response.end();
     } else {
@@ -258,22 +221,36 @@ async function handler(
     }
 
     if (request.method === "POST") {
-      await collections.devices.updateOne(
+      const updateRes = await collections.devices.updateOne(
         { _id: deviceId },
         toUpdate
       );
+
+      if (!updateRes.matchedCount) {
+        response.writeHead(404);
+        response.end("No such device");
+        return;
+      }
+
       response.writeHead(200);
       response.end();
     } else if (request.method === "DELETE") {
-      await collections.devices.updateOne(
+      const updateRes = await collections.devices.updateOne(
         { _id: deviceId },
         { 
           $pull: { _tags: tag },
-                      $unset: {
+          $unset: {
               [`_tagsWithTimestamp.${tag}`]: 1,
-            }
+          }
         }
       );
+
+      if (!updateRes.matchedCount) {
+        response.writeHead(404);
+        response.end("No such device");
+        return;
+      }
+
       response.writeHead(200);
       response.end();
     } else {
@@ -283,19 +260,17 @@ async function handler(
   } else if (FAULTS_REGEX.test(url.pathname)) {
     if (request.method === "DELETE") {
       const faultId = decodeURIComponent(FAULTS_REGEX.exec(url.pathname)[1]);
-      const deviceId = faultId.split(":", 1)[0];
-      const channel = faultId.slice(deviceId.length + 1);
-      await collections.faults.deleteOne({ _id: faultId });
-      if (channel.startsWith("task_")) {
-        const objId = new ObjectId(channel.slice(5));
-        await collections.tasks.deleteOne({ _id: objId });
-        await cache.del(`${deviceId}_tasks_faults_operations`);
-        response.writeHead(200);
-        response.end();
-        return;
+      try {
+        await apiFunctions.deleteFault(faultId);
+      } catch (err) {
+        if (err instanceof ResourceLockedError) {
+          response.writeHead(503);
+          response.end("Device is in session");
+          return;
+        }
+        throw err;
       }
 
-      await cache.del(`${deviceId}_tasks_faults_operations`);
       response.writeHead(200);
       response.end();
     } else {
@@ -305,156 +280,161 @@ async function handler(
   } else if (DEVICE_TASKS_REGEX.test(url.pathname)) {
     if (request.method === "POST") {
       const deviceId = decodeURIComponent(
-        DEVICE_TASKS_REGEX.exec(url.pathname)[1]
+        DEVICE_TASKS_REGEX.exec(url.pathname)[1],
       );
+
+      const conReq = url.searchParams.has("connection_request");
+      let task;
       if (body.length) {
-        let task;
         try {
           task = JSON.parse(body.toString());
+          task.device = deviceId;
         } catch (err) {
           response.writeHead(400);
           response.end(`${err.name}: ${err.message}`);
           return;
         }
-        task.device = deviceId;
-        const dev = await collections.devices.findOne({
-          _id: deviceId,
-        });
+      }
+
+      if (!task && !conReq) {
+        response.writeHead(400);
+        response.end();
+        return;
+      }
+
+      if (!task || !conReq) {
+        const dev = await collections.devices.findOne({ _id: deviceId });
         if (!dev) {
           response.writeHead(404);
           response.end("No such device");
           return;
         }
 
-        const device = flattenDevice(dev);
+        if (task) {
+          await apiFunctions.insertTasks(task);
+          response.writeHead(202, { "Content-Type": "application/json" });
+          response.end(JSON.stringify(task));
+        } else {
+          const status = await apiFunctions.connectionRequest(
+            deviceId,
+            flattenDevice(dev),
+          );
+          if (status) {
+            response.writeHead(504, status);
+            response.end(status);
+          } else {
+            response.writeHead(200);
+            response.end();
+          }
+        }
+        return;
+      }
+
+      const socketTimeout: number = request.socket.timeout;
+
+      // Extend socket timeout while waiting for session
+      if (socketTimeout) request.socket.setTimeout(300000);
+
+      const token = await acquireLock(`cwmp_session_${deviceId}`, 5000, 30000);
+      if (!token) {
+        // Restore socket timeout
+        if (socketTimeout) request.socket.setTimeout(socketTimeout);
+        const dev = await collections.devices.findOne({ _id: deviceId });
+        if (!dev) {
+          response.writeHead(404);
+          response.end("No such device");
+          return;
+        }
+
         await apiFunctions.insertTasks(task);
+        response.writeHead(202, "Task queued but not processed", {
+          "Content-Type": "application/json",
+        });
+        response.end(JSON.stringify(task));
+        return;
+      }
 
-        const lastInform = Date.now();
+      let dev;
 
-        const socketTimeout: number = request.socket["timeout"];
-
-        // Disable socket timeout while waiting for session
-        if (socketTimeout) request.socket.setTimeout(0);
-
-        const notInSession = await apiFunctions.awaitSessionEnd(
-          deviceId,
-          30000
-        );
-        await cache.del(`${deviceId}_tasks_faults_operations`);
-        if (url.searchParams.has("connection_request")) {
-          if (socketTimeout) request.socket.setTimeout(socketTimeout);
-          response.writeHead(202, {
-            "Content-Type": "application/json",
-          });
-          response.end(JSON.stringify(task));
+      try {
+        dev = await collections.devices.findOne({ _id: deviceId });
+        if (!dev) {
+          response.writeHead(404);
+          response.end("No such device");
           return;
         }
+        await apiFunctions.insertTasks(task);
+      } finally {
+        await releaseLock(`cwmp_session_${deviceId}`, token);
+      }
 
-        if (!notInSession) {
-          if (socketTimeout) request.socket.setTimeout(socketTimeout);
-          response.writeHead(202, "Task queued but not processed", {
-            "Content-Type": "application/json",
-          });
-          response.end(JSON.stringify(task));
-          return;
-        }
+      const lastInform = (dev["_lastInform"] as Date).getTime();
+      const device = flattenDevice(dev);
 
-        const status = await apiFunctions.connectionRequest(deviceId, device);
+      let onlineThreshold: number;
+      if (url.searchParams.has("timeout")) {
+        onlineThreshold = parseInt(url.searchParams.get("timeout"));
+      } else {
+        const revision = await getRevision();
+        onlineThreshold = getConfig(
+          revision,
+          "cwmp.deviceOnlineThreshold",
+          {},
+          Date.now(),
+          (exp) => {
+            if (!Array.isArray(exp)) return exp;
+            if (exp[0] === "PARAM") {
+              const p = device[exp[1]];
+              if (p?.value) return p.value[0];
+            } else if (exp[0] === "FUNC") {
+              if (exp[1] === "REMOTE_ADDRESS") {
+                for (const root of ["InternetGatewayDevice", "Device"]) {
+                  const p =
+                    device[`${root}.ManagementServer.ConnectionRequestURL`];
+                  if (p?.value) return new URL(p.value[0] as string).hostname;
+                }
+                return null;
+              }
+            }
+            return exp;
+          },
+        ) as number;
+      }
 
-        if (status) {
-          if (socketTimeout) request.socket.setTimeout(socketTimeout);
-          response.writeHead(202, status, {
-            "Content-Type": "application/json",
-          });
-          response.end(JSON.stringify(task));
-          return;
-        }
-
-        const onlineThreshold =
-          (url.searchParams.has("timeout") &&
-            parseInt(url.searchParams.get("timeout"))) ||
-          (config.get("DEVICE_ONLINE_THRESHOLD", deviceId) as number);
-
+      let status = await apiFunctions.connectionRequest(deviceId, device);
+      if (!status) {
         const sessionStarted = await apiFunctions.awaitSessionStart(
           deviceId,
           lastInform,
-          onlineThreshold
+          onlineThreshold,
         );
         if (!sessionStarted) {
-          if (socketTimeout) request.socket.setTimeout(socketTimeout);
-          response.writeHead(202, "Task queued but not processed", {
-            "Content-Type": "application/json",
-          });
-          response.end(JSON.stringify(task));
-          return;
-        }
-
-        const sessionEnded = await apiFunctions.awaitSessionEnd(
-          deviceId,
-          120000
-        );
-        if (!sessionEnded) {
-          if (socketTimeout) request.socket.setTimeout(socketTimeout);
-          response.writeHead(202, "Task queued but not processed", {
-            "Content-Type": "application/json",
-          });
-          response.end(JSON.stringify(task));
-          return;
-        }
-
-        const prom1 = collections.tasks.findOne(
-          { _id: task._id },
-          { projection: { _id: 1 } }
-        );
-        const prom2 = collections.faults.findOne(
-          { _id: `${deviceId}:task_${task._id}` },
-          {
-            projection: { _id: 1 },
-          }
-        );
-
-        const [t, f] = await Promise.all([prom1, prom2]);
-
-        // Restore socket timeout
-        if (socketTimeout) request.socket.setTimeout(socketTimeout);
-
-        if (f) {
-          response.writeHead(202, "Task faulted", {
-            "Content-Type": "application/json",
-          });
-          response.end(JSON.stringify(t || task));
-        } else if (t) {
-          response.writeHead(202, "Task queued but not processed", {
-            "Content-Type": "application/json",
-          });
-          response.end(JSON.stringify(t));
+          status = "Task queued but not processed";
         } else {
-          response.writeHead(200, {
-            "Content-Type": "application/json",
-          });
-          response.end(JSON.stringify(task));
+          const sessionEnded = await apiFunctions.awaitSessionEnd(
+            deviceId,
+            120000,
+          );
+          if (!sessionEnded) {
+            status = "Task queued but not processed";
+          } else {
+            const f = await collections.faults.count({
+              _id: `${deviceId}:task_${task._id}`,
+            });
+            if (f) status = "Task faulted";
+          }
         }
-      } else if (url.searchParams.has("connection_request")) {
-        // No task, send connection request only
-        const dev = await collections.devices.findOne({
-          _id: deviceId,
-        });
-        if (!dev) {
-          response.writeHead(404);
-          response.end("No such device");
-          return;
-        }
-        const status = await apiFunctions.connectionRequest(deviceId);
-        if (status) {
-          response.writeHead(504, status);
-          response.end(status);
-          return;
-        }
-        response.writeHead(200);
-        response.end();
+      }
+
+      // Restore socket timeout
+      if (socketTimeout) request.socket.setTimeout(socketTimeout);
+
+      if (status) {
+        response.writeHead(202, status, { "Content-Type": "application/json" });
+        response.end(JSON.stringify(task));
       } else {
-        response.writeHead(400);
-        response.end();
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify(task));
       }
     } else {
       response.writeHead(405, { Allow: "POST" });
@@ -468,7 +448,7 @@ async function handler(
       if (request.method === "DELETE") {
         const task = await collections.tasks.findOne(
           { _id: new ObjectId(taskId) },
-          { projection: { device: 1 } }
+          { projection: { device: 1 } },
         );
 
         if (!task) {
@@ -478,13 +458,22 @@ async function handler(
         }
 
         const deviceId = task.device;
-        await collections.tasks.deleteOne({ _id: new ObjectId(taskId) });
+        const token = await acquireLock(`cwmp_session_${deviceId}`, 5000);
+        if (!token) {
+          response.writeHead(503);
+          response.end("Device is in session");
+          return;
+        }
 
-        await collections.faults.deleteOne({
-          _id: `${deviceId}:task_${taskId}`,
-        });
+        try {
+          await Promise.all([
+            collections.tasks.deleteOne({ _id: new ObjectId(taskId) }),
+            collections.faults.deleteOne({ _id: `${deviceId}:task_${taskId}` }),
+          ]);
+        } finally {
+          await releaseLock(`cwmp_session_${deviceId}`, token);
+        }
 
-        await cache.del(`${deviceId}_tasks_faults_operations`);
         response.writeHead(200);
         response.end();
       } else {
@@ -495,15 +484,24 @@ async function handler(
       if (request.method === "POST") {
         const task = await collections.tasks.findOne(
           { _id: new ObjectId(taskId) },
-          { projection: { device: 1 } }
+          { projection: { device: 1 } },
         );
 
         const deviceId = task.device;
-        await collections.faults.deleteOne({
-          _id: `${deviceId}:task_${taskId}`,
-        });
+        const token = await acquireLock(`cwmp_session_${deviceId}`, 5000);
+        if (!token) {
+          response.writeHead(503);
+          response.end("Device is in session");
+          return;
+        }
+        try {
+          await collections.faults.deleteOne({
+            _id: `${deviceId}:task_${taskId}`,
+          });
+        } finally {
+          await releaseLock(`cwmp_session_${deviceId}`, token);
+        }
 
-        await cache.del(`${deviceId}_tasks_faults_operations`);
         response.writeHead(200);
         response.end();
       } else {
@@ -535,7 +533,7 @@ async function handler(
           filename,
           {
             metadata: metadata,
-          }
+          },
         );
 
         uploadStream.on("error", reject);
@@ -594,9 +592,20 @@ async function handler(
     }
 
     const deviceId = decodeURIComponent(
-      DELETE_DEVICE_REGEX.exec(url.pathname)[1]
+      DELETE_DEVICE_REGEX.exec(url.pathname)[1],
     );
-    await apiFunctions.deleteDevice(deviceId);
+
+    try {
+      await apiFunctions.deleteDevice(deviceId);
+    } catch (err) {
+      if (err instanceof ResourceLockedError) {
+        response.writeHead(503);
+        response.end("Device is in session");
+        return;
+      }
+      throw err;
+    }
+
     response.writeHead(200);
     response.end();
   } else if (QUERY_REGEX.test(url.pathname)) {

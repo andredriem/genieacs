@@ -1,26 +1,7 @@
-/**
- * Copyright 2013-2019  GenieACS Inc.
- *
- * This file is part of GenieACS.
- *
- * GenieACS is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * GenieACS is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with GenieACS.  If not, see <http://www.gnu.org/licenses/>.
- */
-
 import { ClosureComponent, Component, Children } from "mithril";
-import { m } from "./components";
-import { stringify } from "../lib/common/expression/parser";
-import memoize from "../lib/common/memoize";
+import { m } from "./components.ts";
+import { stringify } from "../lib/common/expression/parser.ts";
+import memoize from "../lib/common/memoize.ts";
 
 const memoizedStringify = memoize(stringify);
 
@@ -28,7 +9,7 @@ function drawChart(chartData): Children {
   const slices = chartData.slices;
   const total: number = Array.from(Object.values(chartData.slices)).reduce(
     (a: number, s) => a + (s["count"]["value"] || 0),
-    0
+    0,
   );
   const legend = [];
   const paths = [];
@@ -53,10 +34,10 @@ function drawChart(chartData): Children {
               filter: memoizedStringify(slice["filter"]),
             })}`,
           },
-          slice["count"]["value"] || 0
+          slice["count"]["value"] || 0,
         ),
         ` (${(percent * 100).toFixed(2)}%)`,
-      ])
+      ]),
     );
 
     if (percent > 0) {
@@ -77,7 +58,7 @@ function drawChart(chartData): Children {
         m("path", {
           d: sketch,
           fill: slice["color"],
-        })
+        }),
       );
 
       const percentageX =
@@ -106,10 +87,10 @@ function drawChart(chartData): Children {
                 "dominant-baseline": "middle",
                 "text-anchor": "middle",
               },
-              `${(percent * 100).toFixed(2)}%`
+              `${(percent * 100).toFixed(2)}%`,
             ),
-          ]
-        )
+          ],
+        ),
       );
     }
   }
@@ -132,10 +113,10 @@ function drawChart(chartData): Children {
           xmlns: "http://www.w3.org/2000/svg",
           "xmlns:xlink": "http://www.w3.org/1999/xlink",
         },
-        paths.concat(links)
+        paths.concat(links),
       ),
       m(".legend", legend),
-    ])
+    ]),
   );
 }
 

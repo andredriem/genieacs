@@ -1,56 +1,17 @@
-/**
- * Copyright 2013-2019  GenieACS Inc.
- *
- * This file is part of GenieACS.
- *
- * GenieACS is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * GenieACS is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with GenieACS.  If not, see <http://www.gnu.org/licenses/>.
- */
-
-import { MongoClient, ObjectId, Collection, Db } from "mongodb";
-import { get } from "./config";
-import { decodeTag, encodeTag, escapeRegExp } from "./common";
-import { parse } from "./common/expression/parser";
+import { ObjectId } from "mongodb";
+import { decodeTag, encodeTag, escapeRegExp } from "../util.ts";
 import {
   DeviceData,
   Attributes,
   SessionFault,
   Task,
   Operation,
-  Expression,
-} from "./types";
-import Path from "./common/path";
-import * as MongoTypes from "./mongodb-types";
-import { warn } from "./logger.js";
-
-export const collections = {
-  devices: null as Collection<MongoTypes.Device>,
-  presets: null as Collection<MongoTypes.Preset>,
-  objects: null as Collection<MongoTypes.Object>,
-  provisions: null as Collection<MongoTypes.Provision>,
-  virtualParameters: null as Collection<MongoTypes.VirtualParameter>,
-  faults: null as Collection<MongoTypes.Fault>,
-  tasks: null as Collection<MongoTypes.Task>,
-  files: null as Collection<MongoTypes.File>,
-  operations: null as Collection<MongoTypes.Operation>,
-  permissions: null as Collection<MongoTypes.Permission>,
-  users: null as Collection<MongoTypes.User>,
-  config: null as Collection<MongoTypes.Config>,
-  analytics: null as Collection<MongoTypes.Analytics>,
-
-};
-
-let clientPromise: Promise<MongoClient>;
+} from "../types.ts";
+import Path from "../common/path.ts";
+import { collections } from "../db/db.ts";
+import { optimizeProjection } from "../db/util.ts";
+import * as MongoTypes from "../db/types.ts";
+import { warn } from "../logger.ts";
 
 const INVALID_PATH_SUFFIX = "__invalid";
 
@@ -60,69 +21,9 @@ function compareAccessLists(list1: string[], list2: string[]): boolean {
   return true;
 }
 
-const onConnectCallbacks: ((db: Db) => Promise<void>)[] = [];
-
-export function onConnect(callback: (db: Db) => Promise<void>): void {
-  onConnectCallbacks.push(callback);
-}
-
-export async function connect(): Promise<void> {
-  clientPromise = MongoClient.connect("" + get("MONGODB_CONNECTION_URL"));
-
-  const client = await clientPromise;
-  const db = client.db();
-  await Promise.all(onConnectCallbacks.map((c) => c(db)));
-}
-
-onConnect(async (db) => {
-  collections.tasks = db.collection("tasks");
-  await collections.tasks.createIndex({ device: 1, timestamp: 1 });
-
-  collections.devices = db.collection("devices");
-  collections.presets = db.collection("presets");
-  collections.objects = db.collection("objects");
-  collections.files = db.collection("fs.files");
-  collections.provisions = db.collection("provisions");
-  collections.virtualParameters = db.collection("virtualParameters");
-  collections.faults = db.collection("faults");
-  collections.operations = db.collection("operations");
-  collections.permissions = db.collection("permissions");
-  collections.users = db.collection("users");
-  collections.config = db.collection("config");
-  collections.analytics = db.collection("analyticsCollection")
-
-});
-
-export async function disconnect(): Promise<void> {
-  if (clientPromise) await (await clientPromise).close();
-}
-
-// Optimize projection by removing overlaps
-// This can modify the object
-export function optimizeProjection(obj: { [path: string]: 1 }): {
-  [path: string]: 1;
-} {
-  if (obj[""]) return { "": obj[""] };
-
-  const keys = Object.keys(obj).sort();
-  if (keys.length <= 1) return obj;
-
-  for (let i = 1; i < keys.length; ++i) {
-    const a = keys[i - 1];
-    const b = keys[i];
-    if (b.startsWith(a)) {
-      if (b.charAt(a.length) === "." || b.charAt(a.length - 1) === ".") {
-        delete obj[b];
-        keys.splice(i--, 1);
-      }
-    }
-  }
-  return obj;
-}
-
 export async function fetchDevice(
   id: string,
-  timestamp: number
+  timestamp: number,
 ): Promise<[Path, number, Attributes?][]> {
   const res: [Path, number, Attributes?][] = [
     [
@@ -144,7 +45,7 @@ export async function fetchDevice(
     obj,
     path: string,
     pathLength: number,
-    ts: number
+    ts: number,
   ): void {
     if (obj["_timestamp"]) obj["_timestamp"] = +obj["_timestamp"];
     if (obj["_attributesTimestamp"])
@@ -364,7 +265,7 @@ export async function saveDevice(
   deviceId: string,
   deviceData: DeviceData,
   isNew: boolean,
-  sessionTimestamp: number
+  sessionTimestamp: number,
 ): Promise<void> {
   const update = { $set: {}, $unset: {}, $addToSet: {}, $pull: {} };
 
@@ -491,7 +392,7 @@ export async function saveDevice(
             if (!update["$addToSet"]["_tags"])
               update["$addToSet"]["_tags"] = { $each: [] };
             update["$addToSet"]["_tags"]["$each"].push(
-              decodeTag(path.segments[1] as string)
+              decodeTag(path.segments[1] as string),
             );
 
             const timestampAdded = new Date();
@@ -505,7 +406,7 @@ export async function saveDevice(
               };
             }
             update["$pull"]["_tags"]["$in"].push(
-              decodeTag(path.segments[1] as string)
+              decodeTag(path.segments[1] as string),
             );
 
             // Removes the tag from the alternative object
@@ -522,7 +423,10 @@ export async function saveDevice(
           if (pathStr.endsWith(INVALID_PATH_SUFFIX)) {
             const splits = pathStr.split(".");
             splits[splits.length - 1] = decodeTag(
-              splits[splits.length - 1].slice(0, 0 - INVALID_PATH_SUFFIX.length)
+              splits[splits.length - 1].slice(
+                0,
+                0 - INVALID_PATH_SUFFIX.length,
+              ),
             );
             pathStr = splits.join(".");
           }
@@ -544,7 +448,7 @@ export async function saveDevice(
                     Number.isInteger(value2 as number)
                   ) {
                     update["$set"][path.toString() + "._value"] = new Date(
-                      value2 as number
+                      value2 as number,
                     );
                   } else {
                     update["$set"][path.toString() + "._value"] = value2;
@@ -556,7 +460,7 @@ export async function saveDevice(
 
                 if (valueTimestamp2 !== valueTimestamp1) {
                   update["$set"][path.toString() + "._timestamp"] = new Date(
-                    valueTimestamp2
+                    valueTimestamp2,
                   );
                 }
 
@@ -676,7 +580,7 @@ export async function saveDevice(
     update,
     {
       upsert: isNew,
-    }
+    },
   );
 
   if (!result.matchedCount && !result.upsertedCount)
@@ -747,7 +651,7 @@ export async function getAnalyticsTimestamp(id: string): Promise<number> {
 }
 
 export async function getFaults(
-  deviceId: string
+  deviceId: string,
 ): Promise<{ [channel: string]: SessionFault }> {
   const res = await collections.faults
     .find({ _id: { $regex: `^${escapeRegExp(deviceId)}\\:` } })
@@ -774,7 +678,7 @@ export async function getFaults(
 export async function saveFault(
   deviceId: string,
   channel: string,
-  fault: SessionFault
+  fault: SessionFault,
 ): Promise<void> {
   const id = `${deviceId}:${channel}`;
   const f: MongoTypes.Fault = {
@@ -794,14 +698,14 @@ export async function saveFault(
 
 export async function deleteFault(
   deviceId: string,
-  channel: string
+  channel: string,
 ): Promise<void> {
   await collections.faults.deleteOne({ _id: `${deviceId}:${channel}` });
 }
 
 export async function getDueTasks(
   deviceId: string,
-  timestamp: number
+  timestamp: number,
 ): Promise<[Task[], number]> {
   const cur = collections.tasks
     .find({ device: deviceId })
@@ -865,7 +769,7 @@ export async function getDueTasks(
 
 export async function clearTasks(
   deviceId: string,
-  taskIds: string[]
+  taskIds: string[],
 ): Promise<void> {
   await collections.tasks.deleteMany({
     _id: { $in: taskIds.map((id) => new ObjectId(id)) },
@@ -873,7 +777,7 @@ export async function clearTasks(
 }
 
 export async function getOperations(
-  deviceId: string
+  deviceId: string,
 ): Promise<{ [commandKey: string]: Operation }> {
   const res = await collections.operations
     .find({ _id: { $regex: `^${escapeRegExp(deviceId)}\\:` } })
@@ -905,7 +809,7 @@ export async function getOperations(
 export async function saveOperation(
   deviceId: string,
   commandKey: string,
-  operation: Operation
+  operation: Operation,
 ): Promise<void> {
   const id = `${deviceId}:${commandKey}`;
   const o: MongoTypes.Operation = {
@@ -924,60 +828,7 @@ export async function saveOperation(
 
 export async function deleteOperation(
   deviceId: string,
-  commandKey: string
+  commandKey: string,
 ): Promise<void> {
   await collections.operations.deleteOne({ _id: `${deviceId}:${commandKey}` });
-}
-
-export async function getPresets(): Promise<Record<string, any>[]> {
-  return collections.presets.find().toArray();
-}
-
-export async function getObjects(): Promise<Record<string, any>[]> {
-  return collections.objects.find().toArray();
-}
-
-export async function getProvisions(): Promise<Record<string, any>[]> {
-  return collections.provisions.find().toArray();
-}
-
-export async function getVirtualParameters(): Promise<Record<string, any>[]> {
-  return collections.virtualParameters.find().toArray();
-}
-
-export function getFiles(): Promise<Record<string, any>[]> {
-  return collections.files.find().toArray();
-}
-
-export async function getConfig(): Promise<
-  { id: string; value: Expression }[]
-> {
-  const res = await collections.config.find().toArray();
-  return res.map((c) => ({
-    id: c["_id"],
-    value: parse(c["value"]),
-  }));
-}
-
-interface Permission {
-  role: string;
-  resource: string;
-  access: number;
-  filter: string;
-  validate: string;
-}
-
-export async function getPermissions(): Promise<Permission[]> {
-  return collections.permissions.find().toArray() as unknown as Permission[];
-}
-
-interface User {
-  _id: string;
-  password: string;
-  salt: string;
-  roles: string;
-}
-
-export async function getUsers(): Promise<User[]> {
-  return collections.users.find().toArray() as unknown as User[];
 }
