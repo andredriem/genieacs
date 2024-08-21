@@ -1,5 +1,30 @@
 # Change Log
 
+## 1.2.13 (2024-06-06)
+
+- Increase connection timeout for UI and NBI from 30 to 120 seconds to avoid
+  timeouts when running unindexed queries in large deployments.
+
+- Fix race condition causing 503 error when deleting multiple faults at once.
+
+- Fix some UI config options not being evaluated as dynamic expressions.
+
+- Fix an issue where certain edge-case query expressions were not being
+  correctly converted to MongoDB queries, resulting in inaccurate search
+  results.
+
+## 1.2.12 (2024-03-28)
+
+- Fix broken XMPP support in the previous release.
+
+- Fix regression causing CSV downloads to be buffered in memory before being
+  streamed to the client.
+
+## 1.2.11 (2024-03-21)
+
+- Resolved an issue from the previous release that caused incompatibility with
+  Node.js versions 12 through 15.
+
 ## 1.2.10 (2024-03-18)
 
 - Add support for XMPP connection requests. Use the environment variables

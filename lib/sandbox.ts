@@ -213,7 +213,7 @@ function isWithelistedPath(path: string): boolean{
 function writeDevice(
   path: string,
   timestamps: { [attr: string]: number },
-  values: { [attr: string]: any }
+  values: { [attr: string]: any },
 ): ParameterWrapper {
   if(!isWithelistedPath(path))
     return null;

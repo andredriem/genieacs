@@ -46,7 +46,8 @@ import {
   GetRPCMethodsResponse,
   CpeFault,
   GetParameterValues,
-} from "./types";
+  Task,
+} from "./types.ts";
 import { processAnalytics } from "./common/analytics_extension.ts";
 import { generateRpcId } from "./session";
 import { parseXmlDeclaration } from "./xml-parser.ts";
