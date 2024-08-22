@@ -1007,6 +1007,7 @@ export async function rpcRequest(
   sessionContext: SessionContext,
   _declarations: Declaration[],
 ): Promise<{ fault: Fault; rpcId: string; rpc: AcsRequest }> {
+
   if (sessionContext.rpcRequest != null) {
     return {
       fault: null,
@@ -2542,16 +2543,6 @@ export async function rpcResponse(
         });
         continue;
       }
-
-      if (
-        [
-          "InternetGatewayDevice.ManagementServer.Password",
-          "Device.ManagementServer.Password",
-        ].includes(path.toString())
-      ) {
-        continue;
-      }
-
       toClear = device.set(
         sessionContext.deviceData,
         path,
