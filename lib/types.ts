@@ -109,7 +109,7 @@ export interface SyncState {
 export interface SessionContext {
   analyTicsIteation?: number,
   startAnalytics?: boolean,
-  analyticsStorage?: object,
+  analyticsStorage?: string,
   analyTicsIteationFinished?: boolean,
   cpeResponse?: CpeResponse,
   sessionId?: string;

@@ -19,8 +19,14 @@ export async function processAnalytics(
   sessionContext: SessionContext,
 ): Promise<AcsRequest | null>{
 
+  let storage: object;
+
   if(sessionContext.analyticsStorage === undefined)
-    sessionContext.analyticsStorage = {};
+    storage = {};
+  else if(typeof sessionContext.analyticsStorage === 'string')
+    storage = JSON.parse(sessionContext.analyticsStorage);
+  else
+    storage = sessionContext.analyticsStorage;
 
   if(sessionContext.analyTicsIteation === undefined)
     sessionContext.analyTicsIteation = 0;
@@ -46,13 +52,18 @@ export async function processAnalytics(
     log: log,
     generateGetParameterNames: generateGetParameterNames,
     genetrateGetParameterValues: genetrateGetParameterValues,
-    analyticsStorage: sessionContext.analyticsStorage,
+    analyticsStorage: storage,
   }
 
   let nextIterationOfGetValues = null;
   
-  if(generateArguments)
-    nextIterationOfGetValues = generateArguments(context)
+  if(generateArguments){
+    try{
+      nextIterationOfGetValues = generateArguments(context)
+    } finally {
+      sessionContext.analyticsStorage = JSON.stringify(context.analyticsStorage)
+    } 
+  }
   
   // No more ite
   if(nextIterationOfGetValues === null || nextIterationOfGetValues === undefined){
