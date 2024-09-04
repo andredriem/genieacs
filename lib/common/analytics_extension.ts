@@ -46,7 +46,7 @@ export async function processAnalytics(
     log: log,
     generateGetParameterNames: generateGetParameterNames,
     genetrateGetParameterValues: genetrateGetParameterValues,
-
+    analyticsStorage: sessionContext.analyticsStorage,
   }
 
   let nextIterationOfGetValues = null;
