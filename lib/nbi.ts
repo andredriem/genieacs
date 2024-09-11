@@ -203,20 +203,14 @@ async function handler(
     const r = TAGS_REGEX.exec(url.pathname);
     const deviceId = decodeURIComponent(r[1]);
     const tag = decodeURIComponent(r[2]);
-    const dinamycPath = `_tagsWithTimestamp.${tag}`;
 
     // Mongodb typescript integration is horrible
     // and simply does not recognize $mergeObjects
     // but for some reason will accept 
-    const toUpdate: Object = {
+    const toUpdate: object = {
       $addToSet: { _tags: tag },
       $set: {
-          _tagsWithTimestamp: {
-            $mergeObjects: [
-              "$_tagsWithTimestamp",
-              { [tag]: Date.now() },
-            ],
-          }
+        [`_tagsWithTimestamp.${tag}`]: Date.now(),
       },
     }
 
