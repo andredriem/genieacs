@@ -14,6 +14,7 @@ import { flattenDevice } from "./ui/db.ts";
 import { getRequestOrigin } from "./forwarded.ts";
 import { acquireLock, releaseLock } from "./lock.ts";
 import { ResourceLockedError } from "./common/errors.ts";
+import * as net from 'net';
 
 const DEVICE_TASKS_REGEX = /^\/devices\/([a-zA-Z0-9\-_%]+)\/tasks\/?$/;
 const TASKS_REGEX = /^\/tasks\/([a-zA-Z0-9\-_%]+)(\/[a-zA-Z_]*)?$/;
@@ -29,6 +30,7 @@ const PROVISIONS_REGEX = /^\/provisions\/([a-zA-Z0-9\-_%]+)\/?$/;
 const VIRTUAL_PARAMETERS_REGEX =
   /^\/virtual_parameters\/([a-zA-Z0-9\-_%]+)\/?$/;
 const FAULTS_REGEX = /^\/faults\/([a-zA-Z0-9\-_%:]+)\/?$/;
+const PORT_CHECK_REGEX = /^\/port_check\/{0,1}$/;
 
 async function getBody(request: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -602,6 +604,31 @@ async function handler(
 
     response.writeHead(200);
     response.end();
+  } else if (PORT_CHECK_REGEX.test(url.pathname)) {
+    if (request.method === "POST") {
+      // Get ip and port from body
+      let ip: string;
+      let port: number;
+      try {
+        const json = JSON.parse(body.toString());
+        ip = json.ip;
+        port = json.port;
+      } catch (err) {
+        response.writeHead(400);
+        response.end(`${err.name}: ${err.message}`);
+        return;
+      }
+
+      // Check if port is open
+      const timeout = 500;
+      const isOpen = await checkPort(ip, port, timeout);
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ isOpen , ip, port }));
+    } else {
+      console.log(`The method ${request.method} is not allowed`);
+      response.writeHead(405, { Allow: "POST" });
+      response.end("405 Method Not Allowed");
+    }
   } else if (QUERY_REGEX.test(url.pathname)) {
     let collectionName = QUERY_REGEX.exec(url.pathname)[1];
 
@@ -715,4 +742,29 @@ async function handler(
     response.writeHead(404);
     response.end("404 Not Found");
   }
+}
+
+
+/** Check if an ip port is open */
+async function checkPort(ip: string, port: number, timeout: number): Promise<boolean> {
+  return new Promise((resolve) => {
+      const socket = new net.Socket();
+      socket.setTimeout(timeout);
+
+      socket.on('connect', () => {
+          socket.destroy();
+          resolve(true);
+      });
+
+      socket.on('error', () => {
+          resolve(false);
+      });
+
+      socket.on('timeout', () => {
+          socket.destroy();
+          resolve(false);
+      });
+
+      socket.connect(port, ip);
+  });
 }
