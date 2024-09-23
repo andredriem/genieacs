@@ -262,7 +262,7 @@ async function generateBackendJs(): Promise<void> {
   await esbuild.build({
     bundle: true,
     absWorkingDir: INPUT_DIR,
-    minify: MODE === "production",
+    minify: false,
     sourcemap: "inline",
     sourcesContent: false,
     platform: "node",
