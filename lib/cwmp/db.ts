@@ -14,13 +14,6 @@ import * as MongoTypes from "../db/types.ts";
 import { warn } from "../logger.ts";
 
 const INVALID_PATH_SUFFIX = "__invalid";
-const GENIEACS_CLUSTER_ID = (()=>{
-  const env = process.env.GENIEACS_CLUSTER_ID
-  if (typeof env === 'string')
-   return env
-  else
-   throw("GENIEACS_CLUSTER_ID is not set");
-})()
 
 function compareAccessLists(list1: string[], list2: string[]): boolean {
   if (list1.length !== list2.length) return false;
@@ -597,10 +590,7 @@ export async function saveDevice(
 
   if(shouldTriggerWebhook && WEBHOOK_ENDPOINT && WEBHOOK_HEADERS) {
     const webhookBody = {
-      // Since we are dealing with multiple instances of genieacs and we know
-      // several vendors duplicates their deciceId cross country we need to make
-      // sure we have a unique multi-system deviceId for the webhook
-      deviceId: `${GENIEACS_CLUSTER_ID}--${deviceId}`,
+      deviceId: deviceId,
     }
 
     const controller = new AbortController();
