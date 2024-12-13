@@ -106,13 +106,14 @@ export interface SyncState {
   factoryReset: number;
 }
 
-export interface SessionContext {
+export interface  SessionContext {
   analyTicsIteation?: number,
   startAnalytics?: boolean,
   analyticsStorage?: string,
   analyTicsIteationFinished?: boolean,
   cpeResponse?: CpeResponse,
   sessionId?: string;
+  event?: string[];
   timestamp: number;
   deviceId: string;
   deviceData: DeviceData;

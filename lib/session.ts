@@ -197,6 +197,7 @@ export async function inform(
     },
   ]);
 
+  sessionContext.event = rpcReq.event;
   for (const e of rpcReq.event) {
     params.push([
       Path.parse(`Events.${encodeTag(e.replace(/\s+/g, "_"))}`),

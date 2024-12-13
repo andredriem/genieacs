@@ -863,9 +863,28 @@ async function sendAcsRequest(
 
     let analyticsRpcRequest = null
     if(!sessionContext.analyTicsIteationFinished){
-      analyticsRpcRequest = await processAnalytics(
-        sessionContext,
-      )
+      if(
+        // André: 12 DEC 2024:
+        // I've decided to only allow analytics to run on pure 2 PERIODIC events
+        // To avoid conflicts with other events
+        // Specially 6 CONNECTION REQUEST    
+        sessionContext.event &&
+        sessionContext.event.length === 1 &&
+        (
+          sessionContext.event[0] === "2 PERIODIC" ||
+          // I vaguely remember that some equipments dont send 2 PERIODIC events and 
+          // send 4 VALUE CHANGE instead
+          sessionContext.event[0] === "4 VALUE CHANGE"
+      )){
+        analyticsRpcRequest = await processAnalytics(
+          sessionContext,
+        )
+      } else {
+        logger.accessInfo({
+          sessionContext: sessionContext,
+          message: "Skipping analytics due to event type being incompatible: " + JSON.stringify(sessionContext.event),
+        });
+      }
     }
 
     if(analyticsRpcRequest === null){
