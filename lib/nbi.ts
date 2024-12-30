@@ -748,6 +748,19 @@ async function handler(
 /** Check if an ip port is open */
 async function checkPort(ip: string, port: number, timeout: number): Promise<boolean> {
   return new Promise((resolve) => {
+      let trueIp = ip;
+      // When ip is a v6 it might come in brackets we must remove them
+      if(ip.startsWith('[') && ip.endsWith(']')) {
+        // Check if it is a valid ipv6
+        trueIp = ip.slice(1, -1);
+        if(net.isIPv6(trueIp)) {
+          // nothing to do string is already valid
+        }else{
+          // Fallback to original ip
+          trueIp = ip;
+        }
+      }
+
       const socket = new net.Socket();
       socket.setTimeout(timeout);
 
@@ -765,6 +778,6 @@ async function checkPort(ip: string, port: number, timeout: number): Promise<boo
           resolve(false);
       });
 
-      socket.connect(port, ip);
+      socket.connect(port, trueIp);
   });
 }
