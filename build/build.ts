@@ -257,6 +257,7 @@ async function generateBackendJs(): Promise<void> {
     "genieacs-nbi",
     "genieacs-fs",
     "genieacs-ui",
+    "genieacs-log",
   ];
 
   await esbuild.build({
