@@ -102,7 +102,7 @@ app.post('/start-listener', (req, res) => {
       const logLine = data.toString();
       console.log(`Device '${deviceid}' log line:`, logLine);
       try {
-        const response = await fetch(targetEndpoint, {
+        const response = await fetch(targetEndpoint + "/acs_clients/livelog", {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ deviceid, log: logLine })
