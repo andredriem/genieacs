@@ -4,7 +4,7 @@ import express from 'express';
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3001;
 const targetEndpoint = process.env.LOG_WEBHOOK_ENDPOINT;
 if (!targetEndpoint) {
   console.error("LOG_WEBHOOK_ENDPOINT environment variable is not set.");
@@ -51,6 +51,9 @@ app.post('/start-listener', (req, res) => {
     res.status(400).json({ error: "Missing 'deviceid' parameter." });
     return;
   }
+  let dataChunkId = 0;
+  let lastTimePosted = 0;
+  let dataBuffer: string[] = [];
 
   // If a listener already exists for this device, refresh its timeout.
   if (listeners.has(deviceid)) {
@@ -100,12 +103,26 @@ app.post('/start-listener', (req, res) => {
   child.stdout.on('data', (data: Buffer) => {
     void (async () => {
       const logLine = data.toString();
+      // parse the log line to extract the deviceid.
+      dataBuffer.push(logLine);
       console.log(`Device '${deviceid}' log line:`, logLine);
+      // Increment the data chunk ID for each log line.
+      dataChunkId += 1;
+      // Return if 3 seconds hasnt passed since the last post.
+      const currentTime = Date.now();
+      if (currentTime - lastTimePosted < 3000) {
+        return;
+      }
+
+      const newData = dataBuffer.join('')
+      // Resets the data buffer and last time posted.
+      dataBuffer = [] 
+      lastTimePosted = currentTime;
       try {
         const response = await fetch(targetEndpoint + "/acs_clients/livelog", {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deviceid, log: logLine })
+          body: JSON.stringify({ deviceid, newData , dataChunkId }),
         });
         console.log(`Posted log line for device '${deviceid}' (status: ${response.status}).`);
       } catch (error: any) {
