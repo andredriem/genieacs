@@ -5,9 +5,9 @@ import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 
 const app = express();
 const port = process.env.PORT || 3000;
-const targetEndpoint = process.env.TARGET_ENDPOINT;
+const targetEndpoint = process.env.LOG_WEBHOOK_ENDPOINT;
 if (!targetEndpoint) {
-  console.error("TARGET_ENDPOINT environment variable is not set.");
+  console.error("LOG_WEBHOOK_ENDPOINT environment variable is not set.");
   process.exit(1);
 }
 const logFile = process.env.LOG_FILE || '/var/log/genieacs/genieacs-cwmp-access.log';
@@ -33,7 +33,7 @@ const listeners: Map<string, Listener> = new Map();
  *  • If no listener exists for the given deviceid, start a new one:
  *    - Tails the log file (applying the filter if provided).
  *    - For each log line received, asynchronously POSTs the log (along with the deviceid)
- *      to the TARGET_ENDPOINT.
+ *      to the LOG_WEBHOOK_ENDPOINT.
  *    - Automatically terminates the listener after 1 minute of inactivity.
  *
  *  • If a listener for the deviceid already exists, refresh its one-minute timer.
