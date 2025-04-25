@@ -1,18 +1,16 @@
-/** Simple single-threaded server to live stream cwmp-access logs  */
-
-import express from 'express';
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
+import express, { Request, Response, NextFunction } from 'express'; // ← changed
 
 const app = express();
 const port = process.env.PORT || 3001;
-const targetEndpoint = process.env.LOG_WEBHOOK_ENDPOINT;
+const targetEndpoint = process.env.LOG_WEBHOOK_ENDPOINT!;
 if (!targetEndpoint) {
   console.error("LOG_WEBHOOK_ENDPOINT environment variable is not set.");
   process.exit(1);
 }
 const logFile = process.env.LOG_FILE || '/var/log/genieacs/genieacs-cwmp-access.log';
+const MAX_LINES = 100000
 
-// Use Express JSON middleware in case JSON bodies are sent.
 app.use(express.json());
 
 interface Listener {
@@ -20,142 +18,146 @@ interface Listener {
   timer: NodeJS.Timeout;
 }
 
-// A Map to hold active listeners keyed by device ID.
-const listeners: Map<string, Listener> = new Map();
+const listeners = new Map<string, Listener>();
 
-/**
- * POST /start-listener
- *
- * Request Parameters (query or JSON body):
- * - deviceid: string (required) — Unique identifier for the device.
- *
- * Behavior:
- *  • If no listener exists for the given deviceid, start a new one:
- *    - Tails the log file (applying the filter if provided).
- *    - For each log line received, asynchronously POSTs the log (along with the deviceid)
- *      to the LOG_WEBHOOK_ENDPOINT.
- *    - Automatically terminates the listener after 1 minute of inactivity.
- *
- *  • If a listener for the deviceid already exists, refresh its one-minute timer.
- */
-app.post('/start-listener', (req, res) => {
-  // Retrieve deviceid and optional filter from query parameters or JSON body.
-  const deviceid: string =
-    typeof req.query.deviceid === 'string' ? req.query.deviceid : req.body?.deviceid;
-  const filter: string =
-    typeof req.query.filter === 'string'
-      ? req.query.filter
-      : (req.body && req.body.filter) || '';
+app.post('/start-listener', 
+  // eslint-disable-next-line @typescript-eslint/no-misused-promises
+  (req: Request, res: Response, next: NextFunction) => {
+    // now only from JSON body:
+    (async () => {
+      let deviceid = req.body?.device_id as string | undefined;
+      const pppoeUsername = req.body?.pppoe_username as string | undefined;
+      const macList = req.body?.mac_list as string[] | undefined;
 
-  if (!deviceid) {
-    res.status(400).json({ error: "Missing 'deviceid' parameter." });
-    return;
-  }
-  let dataChunkId = 0;
-  let lastTimePosted = 0;
-  let dataBuffer: string[] = [];
+      // If deviceid is undefined we will try to parse the last 100k lines of the log in hope of finding the deviceid
+      deviceid = await tryToFindDeviceId(pppoeUsername, macList);
 
-  // If a listener already exists for this device, refresh its timeout.
-  if (listeners.has(deviceid)) {
-    const existingListener = listeners.get(deviceid)!;
-    clearTimeout(existingListener.timer);
-    existingListener.timer = setTimeout(() => {
-      try {
-        // Kill process group to ensure the listener and its subprocesses are terminated.
-        process.kill(-existingListener.child.pid, 'SIGKILL');
-        console.log(`Listener for deviceid '${deviceid}' timed out and was terminated.`);
-      } catch (err) {
-        console.error(`Error killing listener for deviceid '${deviceid}':`, err);
-      }
-      listeners.delete(deviceid);
-    }, 60000); // 1 minute timeout
-
-    res.json({
-      status: "Listener refreshed",
-      deviceid,
-      pid: existingListener.child.pid
-    });
-    return;
-  }
-
-  // Build the tail command; if a filter is provided, pipe the output through grep.
-  let command = `tail -f ${logFile}`;
-  if (filter) {
-    command += ` | grep --line-buffered '${filter}'`;
-  }
-
-  // Spawn the tail process in detached mode so we can kill the entire process group later.
-  const child = spawn(command, { shell: true, detached: true });
-  child.unref();
-
-  // Set a timeout to terminate this listener after one minute of inactivity.
-  const timer = setTimeout(() => {
-    try {
-      process.kill(-child.pid, 'SIGKILL');
-      console.log(`Listener for deviceid '${deviceid}' timed out and was terminated.`);
-    } catch (err) {
-      console.error(`Error killing listener for deviceid '${deviceid}':`, err);
-    }
-    listeners.delete(deviceid);
-  }, 60000);
-
-  // Listen for log lines on stdout, and asynchronously post them using fetch.
-  child.stdout.on('data', (data: Buffer) => {
-    void (async () => {
-      const logLine = data.toString();
-      // parse the log line to extract the deviceid.
-      dataBuffer.push(logLine);
-      console.log(`Device '${deviceid}' log line:`, logLine);
-      // Increment the data chunk ID for each log line.
-      dataChunkId += 1;
-      // Return if 3 seconds hasnt passed since the last post.
-      const currentTime = Date.now();
-      if (currentTime - lastTimePosted < 3000) {
+      if (!deviceid) {
+        res.status(400).json({ error: "Missing 'deviceid' in request body and couldnt infer it from the log file." });
         return;
       }
 
-      const newData = dataBuffer.join('')
-      // Resets the data buffer and last time posted.
-      dataBuffer = [] 
-      lastTimePosted = currentTime;
-      try {
-        const response = await fetch(targetEndpoint + "/acs_clients/livelog", {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deviceid, newData , dataChunkId }),
+      let dataChunkId = 0;
+      let lastTimePosted = 0;
+      let dataBuffer: string[] = [];
+
+      // if already exists, just refresh timeout
+      if (listeners.has(deviceid)) {
+        const existing = listeners.get(deviceid)!;
+        clearTimeout(existing.timer);
+        existing.timer = setTimeout(() => {
+          try { process.kill(-existing.child.pid, 'SIGKILL'); }
+          catch (e) { console.error(e); }
+          listeners.delete(deviceid);
+        }, 60_000);
+        res.json({
+          status: "Listener refreshed",
+          deviceid,
+          pid: existing.child.pid
         });
-        console.log(`Posted log line for device '${deviceid}' (status: ${response.status}).`);
-      } catch (error: any) {
-        console.error(`Error posting log line for device '${deviceid}':`, error.message);
+        return;
       }
-    })();
-  });
 
-  child.stderr.on('data', (data: Buffer) => {
-    console.error(`Listener stderr for device '${deviceid}':`, data.toString());
-  });
+      // build command
+      let cmd = `tail -f ${logFile}`;
+      if (deviceid) {
+        cmd += ` | grep '${deviceid}'`;
+      }
 
-  child.on('error', (err: Error) => {
-    console.error(`Error in listener process for device '${deviceid}':`, err);
-    listeners.delete(deviceid);
-  });
+      const child = spawn(cmd, { shell: true, detached: true });
+      child.unref();
 
-  child.on('exit', (code, signal) => {
-    console.log(`Listener process for device '${deviceid}' exited (code: ${code}, signal: ${signal}).`);
-    listeners.delete(deviceid);
-  });
+      const timer = setTimeout(() => {
+        try { process.kill(-child.pid, 'SIGKILL'); }
+        catch (e) { console.error(e); }
+        listeners.delete(deviceid);
+      }, 60_000);
 
-  // Save the listener in the map.
-  listeners.set(deviceid, { child, timer });
+      child.stdout.on('data', (buf: Buffer) => {
+        void (async () => {
+          const line = buf.toString();
+          dataBuffer.push(line);
+          dataChunkId++;
+          const now = Date.now();
+          if (now - lastTimePosted < 3000) return;
 
-  res.json({
-    status: "Listener started",
-    deviceid,
-    pid: child.pid
-  });
-});
+          const newData = dataBuffer.join('');
+          dataBuffer = [];
+          lastTimePosted = now;
 
-// Start the Express server.
+          try {
+            const resp = await fetch(targetEndpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ device_id: deviceid, sequence_number: dataChunkId, log: newData }),
+            });
+            console.log(`Posted logs for ${deviceid}, status ${resp.status}`);
+          } catch (err: any) {
+            console.error(`Post error for ${deviceid}:`, err.message);
+          }
+        })();
+      });
+
+      child.stderr.on('data', d => console.error(`stderr ${deviceid}:`, d.toString()));
+      child.on('exit', () => listeners.delete(deviceid));
+      child.on('error', () => listeners.delete(deviceid));
+
+      listeners.set(deviceid, { child, timer });
+
+      res.json({
+        status: "Listener started",
+        deviceid,
+        pid: child.pid
+      });
+    })().catch(next);
+  }
+);
+
 app.listen(port, () => {
-  console.log(`Express server listening on port ${port}`);
+  console.log(`Server listening on ${port}`);
 });
+
+
+
+/**
+ * @param {string}            logFile       Path to the log file
+ * @param {string|undefined}  pppoeUsername PPPoE username to search for
+ * @param {string[]|undefined} macList      List of MACs to search for
+ * @returns {Promise<string|undefined>} the found deviceId, or undefined
+ */
+async function tryToFindDeviceId(pppoeUsername: string | undefined, macList: string[]): Promise<string | undefined> {
+  if (!pppoeUsername && (!macList || macList.length === 0)) return
+
+  // read entire file into memory, split into lines, keep only the last MAX_LINES
+  const content = await new Promise<string>((resolve, reject) => {
+    const tailProc = spawn('tail', ['-n', MAX_LINES.toString(), logFile])
+    let data = ''
+    tailProc.stdout.setEncoding('utf8')
+    tailProc.stdout.on('data', chunk => { data += chunk })
+    tailProc.on('error', err => reject(err))
+    tailProc.on('close', () => resolve(data))
+  })
+  const tail = content.split('\n')
+
+  // scan from newest to oldest
+  for (let i = tail.length - 1; i >= 0; i--) {
+    const line = tail[i]
+    if (
+      (pppoeUsername && line.includes(pppoeUsername)) ||
+      (macList && macList.some(mac => line.includes(mac)))
+    ) {
+      const deviceId = extractDeviceId(line)
+      if (deviceId) return deviceId
+    }
+  }
+}
+
+/**
+ * Extract the 4th “word” (without trailing colon) if it has exactly 3 dashes.
+ */
+function extractDeviceId(line: string): string | undefined {
+  const parts = line.trim().split(/\s+/)
+  if (parts.length < 4) return undefined
+  const candidate = parts[3].replace(/:$/, '')
+  return (candidate.match(/-/g) || []).length === 3 ? candidate : undefined
+}
