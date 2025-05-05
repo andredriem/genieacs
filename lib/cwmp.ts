@@ -64,7 +64,7 @@ const MAX_CONCURRENT_REQUESTS = +config.get("MAX_CONCURRENT_REQUESTS");
 
 const MAX_SESSION_DURATION = 300000;
 const LOCK_REFRESH_INTERVAL = 10000;
-export const REQUEST_TIMEOUT = 10000;
+export const REQUEST_TIMEOUT = 30000;
 
 const currentSessions = new WeakMap<Socket, SessionContext>();
 const sessionsNonces = new WeakMap<Socket, string>();
