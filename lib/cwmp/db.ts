@@ -252,6 +252,8 @@ export async function fetchDevice(
   return res;
 }
 
+const NBI_SERVER_URL = process.env.NBI_SERVER_URL ?? "DEFAULT_SERVER";
+
 const WEBHOOK_ENDPOINT = process.env.WEBHOOK_ENDPOINT ?? undefined
 let WEBHOOK_HEADERS = undefined
 try{
@@ -275,9 +277,12 @@ export async function saveDevice(
   let webhookTimestamp: Date | undefined = undefined
   const currentWebhookTimestamp = deviceData.attributes.get(Path.parse("WebhookTimestamp"))
   if(currentWebhookTimestamp !== undefined && currentWebhookTimestamp.value !== undefined){
-    const b = currentWebhookTimestamp.value[1][0]
+    const b: unknown = currentWebhookTimestamp.value[1][0]
     if(typeof currentWebhookTimestamp.value[1][0] === 'string')
-    webhookTimestamp = new Date(currentWebhookTimestamp.value[1][0])
+      webhookTimestamp = new Date(currentWebhookTimestamp.value[1][0])
+    // if the timestamp is already an instance of Date, we can use it directly
+    else if(b instanceof Date)
+      webhookTimestamp = b;
   }
   if(webhookTimestamp !== undefined && webhookTimestamp.getTime() > Date.now() - 1000 * 60 * 3)
     shouldTriggerWebhook = true;
@@ -546,6 +551,9 @@ export async function saveDevice(
   }
 
   update["$unset"] = optimizeProjection(update["$unset"]);
+  
+  // Set env NBI_SERVER_URL to indicate that this colleciton was updated by this server node
+  update["$set"]["_serverName"] = NBI_SERVER_URL; 
 
   // Remove overlap possibly caused by parameters changing from objects
   // to regular parameters or vice versa. Reason being that _timestamp

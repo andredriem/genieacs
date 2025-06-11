@@ -1,6 +1,7 @@
 import { AcsRequest, GetParameterNames, GetParameterValues, SessionContext } from "../types";
 import * as logger from "../logger";
 import { getAnalyticsTimestamp, saveAnalyticsTimestamp } from "../cwmp/db.ts";
+import Path from "./path.ts";
 //import analytics_stage_data from "./genieacs_analytics"
 
 
@@ -43,6 +44,12 @@ export async function processAnalytics(
   if(sessionContext.previousAnalyticsRun === undefined)
     sessionContext.previousAnalyticsRun = await getAnalyticsTimestamp(sessionContext.deviceId) 
 
+  let dataModel = 'TR-098';
+  const tr181ValueAttempt = sessionContext.deviceData.attributes.get(Path.parse("Device.DeviceInfo.SerialNumber"));
+  if(tr181ValueAttempt !== undefined && tr181ValueAttempt.value !== undefined){
+    dataModel = 'TR-181';
+  }
+
   const context = {
     analyTicsIteation: sessionContext.analyTicsIteation,
     deviceId: sessionContext.deviceId,
@@ -53,6 +60,7 @@ export async function processAnalytics(
     generateGetParameterNames: generateGetParameterNames,
     genetrateGetParameterValues: genetrateGetParameterValues,
     analyticsStorage: storage,
+    dataModel: dataModel,
   }
 
   let nextIterationOfGetValues = null;
