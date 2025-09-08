@@ -6,6 +6,7 @@ import { listener } from "../lib/nbi.ts";
 import * as db from "../lib/db/db.ts";
 import * as extensions from "../lib/extensions.ts";
 import { version as VERSION } from "../package.json";
+import { current_restart_exit_code, processErrorMessage, resetCurrentRestartExitCode } from "../lib/safe-restart.ts";
 
 logger.init("nbi", VERSION);
 
@@ -25,7 +26,12 @@ function exitWorkerGracefully(): void {
 
 function exitWorkerUngracefully(): void {
   void extensions.killAll().finally(() => {
-    process.exit(1);
+      let exit_code = 1;
+      if(current_restart_exit_code != null) {
+        exit_code = current_restart_exit_code;
+        resetCurrentRestartExitCode();
+      }
+      process.exit(exit_code);
   });
 }
 
@@ -79,6 +85,7 @@ if (!cluster.worker) {
       exception: err,
       pid: process.pid,
     });
+    processErrorMessage(err);
     server.stop().then(exitWorkerGracefully).catch(exitWorkerUngracefully);
   });
 

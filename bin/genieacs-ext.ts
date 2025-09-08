@@ -1,3 +1,4 @@
+import { processErrorMessage } from "../lib/safe-restart.ts";
 import { Fault } from "../lib/types.ts";
 
 const jobs = new Set();
@@ -46,6 +47,7 @@ process.on("uncaughtException", (err) => {
     process.send([jobId, fault, null]);
   });
   jobs.clear();
+  processErrorMessage(err);
   process.disconnect();
 });
 
