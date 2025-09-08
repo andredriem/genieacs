@@ -31,31 +31,34 @@ function restartWorker(worker, code, signal): void {
 
   logger.error(msg);
 
+  // Skip normal crash routing if exit code is 50 (safe restart)
   const now = Date.now();
-  crashes.push(now);
+  if(code !== 50) {
+    crashes.push(now);
 
-  let min1 = 0,
-    min2 = 0,
-    min3 = 0;
+    let min1 = 0,
+      min2 = 0,
+      min3 = 0;
 
-  crashes = crashes.filter((n) => {
-    if (n > now - 60000) ++min1;
-    else if (n > now - 120000) ++min2;
-    else if (n > now - 180000) ++min3;
-    else return false;
-    return true;
-  });
-
-  if (min1 > 5 && min2 > 5 && min3 > 5) {
-    process.exitCode = 1;
-    cluster.removeListener("exit", restartWorker);
-    for (const pid in cluster.workers) cluster.workers[pid].kill();
-
-    logger.error({
-      message: "Too many crashes, exiting",
-      pid: process.pid,
+    crashes = crashes.filter((n) => {
+      if (n > now - 60000) ++min1;
+      else if (n > now - 120000) ++min2;
+      else if (n > now - 180000) ++min3;
+      else return false;
+      return true;
     });
-    return;
+
+    if (min1 > 5 && min2 > 5 && min3 > 5) {
+      process.exitCode = 1;
+      cluster.removeListener("exit", restartWorker);
+      for (const pid in cluster.workers) cluster.workers[pid].kill();
+
+      logger.error({
+        message: "Too many crashes, exiting",
+        pid: process.pid,
+      });
+      return;
+    }
   }
 
   respawnTimestamp = Math.max(now, respawnTimestamp + 2000);
