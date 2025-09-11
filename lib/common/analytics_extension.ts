@@ -45,8 +45,8 @@ export async function processAnalytics(
     sessionContext.previousAnalyticsRun = await getAnalyticsTimestamp(sessionContext.deviceId) 
 
   let dataModel = 'TR-098';
-  const tr181ValueAttempt = sessionContext.deviceData.attributes.get(Path.parse("Device.DeviceInfo.SerialNumber"));
-  if(tr181ValueAttempt !== undefined && tr181ValueAttempt.value !== undefined){
+  const tr181ValueAttempt = sessionContext.deviceData.attributes.get(Path.parse("Device"));
+  if(tr181ValueAttempt !== undefined){
     dataModel = 'TR-181';
   }
 
