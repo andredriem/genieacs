@@ -15,6 +15,7 @@ import { getRequestOrigin } from "./forwarded.ts";
 import { acquireLock, releaseLock } from "./lock.ts";
 import { ResourceLockedError } from "./common/errors.ts";
 import * as net from 'net';
+import * as child_process from 'child_process';
 
 const DEVICE_TASKS_REGEX = /^\/devices\/([a-zA-Z0-9\-_%]+)\/tasks\/?$/;
 const TASKS_REGEX = /^\/tasks\/([a-zA-Z0-9\-_%]+)(\/[a-zA-Z_]*)?$/;
@@ -31,6 +32,7 @@ const VIRTUAL_PARAMETERS_REGEX =
   /^\/virtual_parameters\/([a-zA-Z0-9\-_%]+)\/?$/;
 const FAULTS_REGEX = /^\/faults\/([a-zA-Z0-9\-_%:]+)\/?$/;
 const PORT_CHECK_REGEX = /^\/port_check\/{0,1}$/;
+const GREP_LOG_REGEX = /^\/grep-log\/([a-zA-Z0-9\-_%]+)\/?$/;
 
 async function getBody(request: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -627,6 +629,73 @@ async function handler(
     } else {
       console.log(`The method ${request.method} is not allowed`);
       response.writeHead(405, { Allow: "POST" });
+      response.end("405 Method Not Allowed");
+    }
+  } else if (GREP_LOG_REGEX.test(url.pathname)) {
+    if (request.method === "GET") {
+      const deviceId = decodeURIComponent(GREP_LOG_REGEX.exec(url.pathname)[1]);
+      const logFile = "/var/log/genieacs/genieacs-cwmp-access.log";
+
+      try {
+        logger.accessInfo({
+          message: `Grep log request for deviceId: ${deviceId}`,
+          deviceId: deviceId,
+        });
+
+        // Execute cat + grep command
+        const command = `cat ${logFile} | grep ${deviceId}`;
+
+        child_process.exec(command, (error, stdout, stderr) => {
+          if (error) {
+            // grep returns exit code 1 when no matches found
+            if (error.code === 1) {
+              logger.accessInfo({
+                message: `No log entries found for deviceId: ${deviceId}`,
+                deviceId: deviceId,
+              });
+              response.writeHead(200, { "Content-Type": "application/json" });
+              response.end(JSON.stringify({ body: "" }));
+              return;
+            }
+
+            // Other errors
+            logger.accessError({
+              message: `Error executing grep command for deviceId: ${deviceId}`,
+              deviceId: deviceId,
+              error: error.message,
+              stderr: stderr,
+            });
+            response.writeHead(500, { "Content-Type": "application/json" });
+            response.end(JSON.stringify({
+              error: "Internal server error",
+              message: error.message
+            }));
+            return;
+          }
+
+          logger.accessInfo({
+            message: `Successfully retrieved log entries for deviceId: ${deviceId}`,
+            deviceId: deviceId,
+            lines: stdout.split('\n').filter(l => l).length,
+          });
+
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({ body: stdout }));
+        });
+      } catch (err) {
+        logger.accessError({
+          message: `Exception in grep-log endpoint for deviceId: ${deviceId}`,
+          deviceId: deviceId,
+          error: err.message,
+        });
+        response.writeHead(500, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({
+          error: "Internal server error",
+          message: err.message
+        }));
+      }
+    } else {
+      response.writeHead(405, { Allow: "GET" });
       response.end("405 Method Not Allowed");
     }
   } else if (QUERY_REGEX.test(url.pathname)) {
