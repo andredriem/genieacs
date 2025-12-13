@@ -741,15 +741,20 @@ async function handler(
         response.writeHead(httpStatus, { "Content-Type": "application/json" });
         response.end(JSON.stringify(healthStatus, null, 2));
       } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        const errorStack = err instanceof Error ? err.stack : undefined;
+
         logger.accessError({
           message: "Exception in health check endpoint",
-          error: err.message,
+          error: errorMessage,
+          stack: errorStack,
         });
+
         response.writeHead(500, { "Content-Type": "application/json" });
         response.end(JSON.stringify({
           overall: "unhealthy",
           error: "Internal server error",
-          message: err.message
+          message: errorMessage
         }));
       }
     } else {
@@ -960,9 +965,13 @@ function getWorkerInfo(serviceName: string): { count: number; pids: number[] } {
 
     return { count: workerCount, pids: workerPids };
   } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorStack = err instanceof Error ? err.stack : undefined;
+
     logger.accessError({
       message: `Error getting worker info for ${serviceName}`,
-      error: err.message,
+      error: errorMessage,
+      stack: errorStack,
     });
     return { count: 0, pids: [] };
   }
@@ -975,26 +984,49 @@ async function checkMongoDBHealth(): Promise<{ status: "online" | "offline"; con
     await collections.devices.findOne({}, { projection: { _id: 1 } });
     return { status: "online", connected: true };
   } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorStack = err instanceof Error ? err.stack : undefined;
+
+    logger.accessError({
+      message: "MongoDB health check failed",
+      error: errorMessage,
+      stack: errorStack,
+    });
+
     return {
       status: "offline",
       connected: false,
-      error: err.message
+      error: errorMessage
     };
   }
 }
 
 /** Get expected worker count based on config */
 function getExpectedWorkerCount(serviceType: string): number {
-  const configKey = `${serviceType.toUpperCase()}_WORKER_PROCESSES`;
-  const workerCount = config.get(configKey) as number;
+  try {
+    const configKey = `${serviceType.toUpperCase()}_WORKER_PROCESSES`;
+    const workerCount = config.get(configKey) as number;
 
-  // If workerCount is 0 (default), use Math.max(2, cpus().length)
-  // This matches the logic in cluster.ts
-  if (!workerCount) {
+    // If workerCount is 0 (default), use Math.max(2, cpus().length)
+    // This matches the logic in cluster.ts
+    if (!workerCount) {
+      return Math.max(2, cpus().length);
+    }
+
+    return workerCount;
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorStack = err instanceof Error ? err.stack : undefined;
+
+    logger.accessError({
+      message: `Error getting expected worker count for ${serviceType}`,
+      error: errorMessage,
+      stack: errorStack,
+    });
+
+    // Return safe default
     return Math.max(2, cpus().length);
   }
-
-  return workerCount;
 }
 
 /** Perform comprehensive health check */
@@ -1002,13 +1034,33 @@ async function performHealthCheck(): Promise<HealthCheckResult> {
   const timeout = 1000;
   const localhost = '127.0.0.1';
 
-  // Get ports from config
-  const ports = {
-    cwmp: config.get("CWMP_PORT") as number,
-    nbi: config.get("NBI_PORT") as number,
-    fs: config.get("FS_PORT") as number,
-    ui: config.get("UI_PORT") as number,
-  };
+  // Get ports from config with safe defaults
+  let ports: { cwmp: number; nbi: number; fs: number; ui: number };
+  try {
+    ports = {
+      cwmp: (config.get("CWMP_PORT") as number) || 7547,
+      nbi: (config.get("NBI_PORT") as number) || 7557,
+      fs: (config.get("FS_PORT") as number) || 7567,
+      ui: (config.get("UI_PORT") as number) || 3000,
+    };
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorStack = err instanceof Error ? err.stack : undefined;
+
+    logger.accessError({
+      message: "Error reading port configuration, using defaults",
+      error: errorMessage,
+      stack: errorStack,
+    });
+
+    // Use default ports
+    ports = {
+      cwmp: 7547,
+      nbi: 7557,
+      fs: 7567,
+      ui: 3000,
+    };
+  }
 
   // Get expected worker counts from config
   const expectedWorkers = {
