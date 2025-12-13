@@ -32,7 +32,7 @@ const VIRTUAL_PARAMETERS_REGEX =
   /^\/virtual_parameters\/([a-zA-Z0-9\-_%]+)\/?$/;
 const FAULTS_REGEX = /^\/faults\/([a-zA-Z0-9\-_%:]+)\/?$/;
 const PORT_CHECK_REGEX = /^\/port_check\/{0,1}$/;
-const GREP_LOG_REGEX = /^\/grep-log\/([a-zA-Z0-9\-_%]+)\/?$/;
+const GREP_LOG_REGEX = /^\/grep-log\/?$/;
 
 async function getBody(request: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -633,7 +633,18 @@ async function handler(
     }
   } else if (GREP_LOG_REGEX.test(url.pathname)) {
     if (request.method === "GET") {
-      const deviceId = decodeURIComponent(GREP_LOG_REGEX.exec(url.pathname)[1]);
+      // Get device_id from query parameter
+      const deviceId = url.searchParams.get('device_id');
+
+      if (!deviceId) {
+        response.writeHead(400, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({
+          error: "Bad Request",
+          message: "device_id query parameter is required"
+        }));
+        return;
+      }
+
       const logFile = "/var/log/genieacs/genieacs-cwmp-access.log";
 
       try {
@@ -642,45 +653,66 @@ async function handler(
           deviceId: deviceId,
         });
 
-        // Execute cat + grep command
-        const command = `cat ${logFile} | grep ${deviceId}`;
+        // Use spawn instead of exec to prevent command injection
+        // spawn doesn't use a shell, so arguments are passed safely
+        const grep = child_process.spawn('grep', [deviceId, logFile]);
 
-        child_process.exec(command, (error, stdout, stderr) => {
-          if (error) {
+        let stdout = '';
+        let stderr = '';
+
+        grep.stdout.on('data', (data) => {
+          stdout += data.toString();
+        });
+
+        grep.stderr.on('data', (data) => {
+          stderr += data.toString();
+        });
+
+        grep.on('close', (code) => {
+          if (code === 0) {
+            // grep found matches
+            logger.accessInfo({
+              message: `Successfully retrieved log entries for deviceId: ${deviceId}`,
+              deviceId: deviceId,
+              lines: stdout.split('\n').filter(l => l).length,
+            });
+            response.writeHead(200, { "Content-Type": "application/json" });
+            response.end(JSON.stringify({ body: stdout }));
+          } else if (code === 1) {
             // grep returns exit code 1 when no matches found
-            if (error.code === 1) {
-              logger.accessInfo({
-                message: `No log entries found for deviceId: ${deviceId}`,
-                deviceId: deviceId,
-              });
-              response.writeHead(200, { "Content-Type": "application/json" });
-              response.end(JSON.stringify({ body: "" }));
-              return;
-            }
-
+            logger.accessInfo({
+              message: `No log entries found for deviceId: ${deviceId}`,
+              deviceId: deviceId,
+            });
+            response.writeHead(200, { "Content-Type": "application/json" });
+            response.end(JSON.stringify({ body: "" }));
+          } else {
             // Other errors
             logger.accessError({
               message: `Error executing grep command for deviceId: ${deviceId}`,
               deviceId: deviceId,
-              error: error.message,
+              exitCode: code,
               stderr: stderr,
             });
             response.writeHead(500, { "Content-Type": "application/json" });
             response.end(JSON.stringify({
               error: "Internal server error",
-              message: error.message
+              message: "Error executing grep command"
             }));
-            return;
           }
+        });
 
-          logger.accessInfo({
-            message: `Successfully retrieved log entries for deviceId: ${deviceId}`,
+        grep.on('error', (error) => {
+          logger.accessError({
+            message: `Error spawning grep process for deviceId: ${deviceId}`,
             deviceId: deviceId,
-            lines: stdout.split('\n').filter(l => l).length,
+            error: error.message,
           });
-
-          response.writeHead(200, { "Content-Type": "application/json" });
-          response.end(JSON.stringify({ body: stdout }));
+          response.writeHead(500, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({
+            error: "Internal server error",
+            message: error.message
+          }));
         });
       } catch (err) {
         logger.accessError({
