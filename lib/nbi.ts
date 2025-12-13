@@ -16,6 +16,8 @@ import { acquireLock, releaseLock } from "./lock.ts";
 import { ResourceLockedError } from "./common/errors.ts";
 import * as net from 'net';
 import * as child_process from 'child_process';
+import * as config from './config.ts';
+import { cpus } from 'node:os';
 
 const DEVICE_TASKS_REGEX = /^\/devices\/([a-zA-Z0-9\-_%]+)\/tasks\/?$/;
 const TASKS_REGEX = /^\/tasks\/([a-zA-Z0-9\-_%]+)(\/[a-zA-Z_]*)?$/;
@@ -33,6 +35,7 @@ const VIRTUAL_PARAMETERS_REGEX =
 const FAULTS_REGEX = /^\/faults\/([a-zA-Z0-9\-_%:]+)\/?$/;
 const PORT_CHECK_REGEX = /^\/port_check\/{0,1}$/;
 const GREP_LOG_REGEX = /^\/grep-log\/?$/;
+const HEALTH_CHECK_REGEX = /^\/health\/?$/;
 
 async function getBody(request: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -730,6 +733,29 @@ async function handler(
       response.writeHead(405, { Allow: "GET" });
       response.end("405 Method Not Allowed");
     }
+  } else if (HEALTH_CHECK_REGEX.test(url.pathname)) {
+    if (request.method === "GET") {
+      try {
+        const healthStatus = await performHealthCheck();
+        const httpStatus = healthStatus.overall === "healthy" ? 200 : 503;
+        response.writeHead(httpStatus, { "Content-Type": "application/json" });
+        response.end(JSON.stringify(healthStatus, null, 2));
+      } catch (err) {
+        logger.accessError({
+          message: "Exception in health check endpoint",
+          error: err.message,
+        });
+        response.writeHead(500, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({
+          overall: "unhealthy",
+          error: "Internal server error",
+          message: err.message
+        }));
+      }
+    } else {
+      response.writeHead(405, { Allow: "GET" });
+      response.end("405 Method Not Allowed");
+    }
   } else if (QUERY_REGEX.test(url.pathname)) {
     let collectionName = QUERY_REGEX.exec(url.pathname)[1];
 
@@ -881,4 +907,188 @@ async function checkPort(ip: string, port: number, timeout: number): Promise<boo
 
       socket.connect(port, trueIp);
   });
+}
+
+interface ServiceHealth {
+  status: "online" | "offline" | "unhealthy";
+  port: number;
+  portOpen: boolean;
+  expectedWorkers: number;
+  actualWorkers: number;
+  workerPids?: number[];
+}
+
+interface HealthCheckResult {
+  overall: "healthy" | "unhealthy";
+  timestamp: string;
+  services: {
+    cwmp: ServiceHealth;
+    nbi: ServiceHealth;
+    fs: ServiceHealth;
+    ui: ServiceHealth;
+  };
+  mongodb: {
+    status: "online" | "offline";
+    connected: boolean;
+    error?: string;
+  };
+}
+
+/** Get worker count and PIDs for a specific service */
+function getWorkerInfo(serviceName: string): { count: number; pids: number[] } {
+  try {
+    const psOutput = child_process.execSync('ps -aux', { encoding: 'utf-8' });
+    const lines = psOutput.split('\n');
+    const servicePattern = new RegExp(`genieacs-${serviceName}\\s*$`);
+
+    const workerPids: number[] = [];
+    for (const line of lines) {
+      if (servicePattern.test(line)) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length > 1) {
+          const pid = parseInt(parts[1]);
+          if (!isNaN(pid)) {
+            workerPids.push(pid);
+          }
+        }
+      }
+    }
+
+    // Subtract 1 for the master process (total processes - 1 = worker count)
+    // Ensure count doesn't go below 0
+    const workerCount = Math.max(0, workerPids.length - 1);
+
+    return { count: workerCount, pids: workerPids };
+  } catch (err) {
+    logger.accessError({
+      message: `Error getting worker info for ${serviceName}`,
+      error: err.message,
+    });
+    return { count: 0, pids: [] };
+  }
+}
+
+/** Check MongoDB connection health */
+async function checkMongoDBHealth(): Promise<{ status: "online" | "offline"; connected: boolean; error?: string }> {
+  try {
+    // Try to ping the database
+    await collections.devices.findOne({}, { projection: { _id: 1 } });
+    return { status: "online", connected: true };
+  } catch (err) {
+    return {
+      status: "offline",
+      connected: false,
+      error: err.message
+    };
+  }
+}
+
+/** Get expected worker count based on config */
+function getExpectedWorkerCount(serviceType: string): number {
+  const configKey = `${serviceType.toUpperCase()}_WORKER_PROCESSES`;
+  const workerCount = config.get(configKey) as number;
+
+  // If workerCount is 0 (default), use Math.max(2, cpus().length)
+  // This matches the logic in cluster.ts
+  if (!workerCount) {
+    return Math.max(2, cpus().length);
+  }
+
+  return workerCount;
+}
+
+/** Perform comprehensive health check */
+async function performHealthCheck(): Promise<HealthCheckResult> {
+  const timeout = 1000;
+  const localhost = '127.0.0.1';
+
+  // Get ports from config
+  const ports = {
+    cwmp: config.get("CWMP_PORT") as number,
+    nbi: config.get("NBI_PORT") as number,
+    fs: config.get("FS_PORT") as number,
+    ui: config.get("UI_PORT") as number,
+  };
+
+  // Get expected worker counts from config
+  const expectedWorkers = {
+    cwmp: getExpectedWorkerCount('cwmp'),
+    nbi: getExpectedWorkerCount('nbi'),
+    fs: getExpectedWorkerCount('fs'),
+    ui: getExpectedWorkerCount('ui'),
+  };
+
+  // Check all ports in parallel
+  const [cwmpPortOpen, nbiPortOpen, fsPortOpen, uiPortOpen, mongoHealth] = await Promise.all([
+    checkPort(localhost, ports.cwmp, timeout),
+    checkPort(localhost, ports.nbi, timeout),
+    checkPort(localhost, ports.fs, timeout),
+    checkPort(localhost, ports.ui, timeout),
+    checkMongoDBHealth(),
+  ]);
+
+  // Get worker counts
+  const cwmpWorkers = getWorkerInfo('cwmp');
+  const nbiWorkers = getWorkerInfo('nbi');
+  const fsWorkers = getWorkerInfo('fs');
+  const uiWorkers = getWorkerInfo('ui');
+
+  // Determine service health status
+  const getServiceStatus = (
+    portOpen: boolean,
+    actualWorkers: number,
+    expectedCount: number
+  ): "online" | "offline" | "unhealthy" => {
+    if (!portOpen) return "offline";
+    if (actualWorkers === 0) return "offline";
+    if (actualWorkers !== expectedCount) return "unhealthy";
+    return "online";
+  };
+
+  const services = {
+    cwmp: {
+      status: getServiceStatus(cwmpPortOpen, cwmpWorkers.count, expectedWorkers.cwmp),
+      port: ports.cwmp,
+      portOpen: cwmpPortOpen,
+      expectedWorkers: expectedWorkers.cwmp,
+      actualWorkers: cwmpWorkers.count,
+      workerPids: cwmpWorkers.pids,
+    },
+    nbi: {
+      status: getServiceStatus(nbiPortOpen, nbiWorkers.count, expectedWorkers.nbi),
+      port: ports.nbi,
+      portOpen: nbiPortOpen,
+      expectedWorkers: expectedWorkers.nbi,
+      actualWorkers: nbiWorkers.count,
+      workerPids: nbiWorkers.pids,
+    },
+    fs: {
+      status: getServiceStatus(fsPortOpen, fsWorkers.count, expectedWorkers.fs),
+      port: ports.fs,
+      portOpen: fsPortOpen,
+      expectedWorkers: expectedWorkers.fs,
+      actualWorkers: fsWorkers.count,
+      workerPids: fsWorkers.pids,
+    },
+    ui: {
+      status: getServiceStatus(uiPortOpen, uiWorkers.count, expectedWorkers.ui),
+      port: ports.ui,
+      portOpen: uiPortOpen,
+      expectedWorkers: expectedWorkers.ui,
+      actualWorkers: uiWorkers.count,
+      workerPids: uiWorkers.pids,
+    },
+  };
+
+  // Determine overall health
+  const allServicesHealthy = Object.values(services).every(s => s.status === "online");
+  const mongoHealthy = mongoHealth.connected;
+  const overall = allServicesHealthy && mongoHealthy ? "healthy" : "unhealthy";
+
+  return {
+    overall,
+    timestamp: new Date().toISOString(),
+    services,
+    mongodb: mongoHealth,
+  };
 }
