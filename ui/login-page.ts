@@ -90,6 +90,17 @@ export const component: ClosureComponent = (): Component => {
           },
           "Change password",
         ),
+        m(
+          "p",
+          m(
+            "a",
+            {
+              href: "https://github.com/andredriem/genieacs",
+              target: "_blank",
+            },
+            "Source code",
+          ),
+        ),
       ];
     },
   };
