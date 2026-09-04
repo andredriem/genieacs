@@ -63,6 +63,11 @@ const MAX_CYCLES = 4;
 const MAX_CONCURRENT_REQUESTS = +config.get("MAX_CONCURRENT_REQUESTS");
 
 const MAX_SESSION_DURATION = 300000;
+// Temporary debug logging for the session park/resume path in onConnection.
+// Enable with GENIEACS_DEBUG_SESSION_PARK=true (never on in production).
+const DEBUG_SESSION_PARK = /^(1|true|yes)$/i.test(
+  process.env["GENIEACS_DEBUG_SESSION_PARK"] || "",
+);
 const LOCK_REFRESH_INTERVAL = 10000;
 export const REQUEST_TIMEOUT = 10000;
 
@@ -962,7 +967,7 @@ export async function onConnection(socket: Socket): Promise<void> {
     socket.destroy();
   }
 
-  const sessionContext = currentSessions.get(socket);
+  let sessionContext = currentSessions.get(socket);
   if (!sessionContext) return;
   currentSessions.delete(socket);
   if (sessionContext.authState !== 2) {
@@ -992,20 +997,72 @@ export async function onConnection(socket: Socket): Promise<void> {
     return;
   }
 
+  const serialized = await session.serialize(sessionContext);
   await cache.set(
     `session_${sessionContext.sessionId}`,
-    await session.serialize(sessionContext),
+    serialized,
     Math.ceil(timeout / 1000) + 3,
   );
 
+  // DEBUG (temporary): what was parked in the cache when the socket closed
+  if (DEBUG_SESSION_PARK) logger.accessInfo({
+    sessionContext: sessionContext,
+    message: "DEBUG session parked",
+    sessionId: sessionContext.sessionId,
+    timeoutMs: timeout,
+    serializedBytes: serialized.length,
+    rpcCount: sessionContext.rpcCount,
+    revisions: JSON.stringify(sessionContext.revisions),
+    knownPaths: sessionContext.deviceData.timestamps.size,
+    pendingProvisions: sessionContext.provisions.length,
+    analyticsIteration: sessionContext.analyTicsIteation,
+  });
+
+  // Release the in-memory session while waiting for the CPE to resume on a
+  // new connection. Otherwise every round on a new socket keeps a full copy
+  // of deviceData alive for ~timeout seconds, and copies pile up.
+  const sessionId = sessionContext.sessionId;
+  const deviceId = sessionContext.deviceId;
+  const httpRequest = sessionContext.httpRequest;
+  timeoutMsg.sessionContext = null;
+  sessionContext = null;
+
   await setTimeoutPromise(timeout + 1000, false);
-  const sessionStr = await cache.get(`session_${sessionContext.sessionId}`);
+  const sessionStr = await cache.get(`session_${sessionId}`);
+
+  // DEBUG (temporary): did the CPE resume (entry popped) or is it still parked?
+  if (DEBUG_SESSION_PARK) logger.accessInfo({
+    message: "DEBUG session park check",
+    deviceId: deviceId,
+    sessionId: sessionId,
+    stillParked: !!sessionStr,
+    waitedMs: timeout + 1000,
+  });
   if (!sessionStr) return;
 
   const _sessionContext = await session.deserialize(sessionStr);
   if (_sessionContext.lastActivity === lastActivity) {
+    _sessionContext.httpRequest = httpRequest;
+    timeoutMsg.sessionContext = _sessionContext;
     logger.accessError(timeoutMsg);
-    await endSession(sessionContext);
+    // DEBUG (temporary): state of the deserialized copy we are about to close
+    if (DEBUG_SESSION_PARK) logger.accessInfo({
+      sessionContext: _sessionContext,
+      message: "DEBUG session timeout close",
+      sessionId: sessionId,
+      knownPaths: _sessionContext.deviceData.timestamps.size,
+      revisions: JSON.stringify(_sessionContext.revisions),
+      mapRevision: _sessionContext.deviceData.timestamps.revision,
+      pendingProvisions: _sessionContext.provisions.length,
+      doneTasks: (_sessionContext.doneTasks || []).length,
+    });
+    await endSession(_sessionContext);
+  } else if (DEBUG_SESSION_PARK) {
+    logger.accessInfo({
+      message: "DEBUG session parked again by a later close",
+      deviceId: deviceId,
+      sessionId: sessionId,
+    });
   }
 }
 
